@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./drip-crm-mobile-ai/backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./drip-crm-mobile-ai/backend/tokens:/app/tokens
+      - ./drip-crm-mobile-ai/backend/firebase-service-account.json:/app/firebase-service-account.json
+    restart: always
+
+
