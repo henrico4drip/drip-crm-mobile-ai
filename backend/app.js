@@ -1,21 +1,10 @@
 // app.js (Arquivo Principal do seu Backend)
-const admin = require('firebase-admin');
+const { db, admin } = require('./firebaseService'); // Importa a instância única do Firebase
 const { listenForOperatorChanges } = require('./botManager');
 const { setupDailyTasks } = require('./taskScheduler');
 // Importe outras dependências como Express, se você tiver uma API REST para o frontend
 // const express = require('express');
 // const app = express();
-
-// 1. Configurar Firebase Admin SDK (APENAS UMA VEZ NO SEU APP)
-const serviceAccount = require('./firebase-service-account.json');
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://whatsapp-sales-assistant-default-rtdb.firebaseio.com"
-});
-const db = admin.firestore(); // Exporte 'db' através de um firebaseService.js
-
-// Criar um arquivo firebaseService.js
-// export const db = admin.firestore();
 
 console.log('🔥 Firebase Admin inicializado.');
 

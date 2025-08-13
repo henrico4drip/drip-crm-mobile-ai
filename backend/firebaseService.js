@@ -5,15 +5,19 @@ const admin = require('firebase-admin');
 const serviceAccount = require('./firebase-service-account.json');
 
 // Inicializa o Firebase Admin SDK APENAS UMA VEZ
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-  databaseURL: "https://whatsapp-sales-assistant-default-rtdb.firebaseio.com" // Verifique se esta URL está correta
-});
+// Adicionamos a verificação para garantir que não será inicializado novamente
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+    databaseURL: "https://whatsapp-sales-assistant-default-rtdb.firebaseio.com" // Verifique se esta URL está correta
+  });
+}
 
 const db = admin.firestore();
+const auth = admin.auth();
 
 console.log('🔥 Firebase Admin inicializado.');
 
-// Exporta 'db' para que outros módulos possam acessá-lo.
+// Exporta 'db' e 'auth' para que outros módulos possam acessá-los.
 // Exporta 'admin' também, pois FieldValue.serverTimestamp() é um método de 'admin.firestore.FieldValue'.
-module.exports = { db, admin };
+module.exports = { db, admin, auth };
