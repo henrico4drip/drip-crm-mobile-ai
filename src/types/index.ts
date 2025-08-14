@@ -39,10 +39,15 @@ export interface Tarefa {
       total_messages: number;
       client_messages: number;
       operator_messages: number;
-      unanswered_count: number;
+      unresponded_messages?: number; // Opcional para compatibilidade
       conversation_period: string;
-      recent_client_messages: string[];
       last_interaction: string;
+      recent_client_messages: Array<{
+        content: string;
+        timestamp: string;
+      }> | string[]; // Suporte aos dois formatos
+      message_types?: { [key: string]: number }; // Novo campo
+      last_sender?: string; // Novo campo
     };
   };
   data_conclusao?: any; // Firebase Timestamp

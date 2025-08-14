@@ -244,7 +244,7 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                                   {tarefa.metadata.context_messages} contexto
                                 </Badge>
                               )}
-                              {tarefa.metadata.type === 'contextual_summary' && (
+                              {(tarefa.metadata.type === 'contextual_summary' || tarefa.metadata.type === 'consolidated_conversation_summary' || tarefa.metadata.type === 'full_context_summary') && (
                                 <Badge className="bg-green-100 text-green-800 text-xs px-2 py-0">
                                   🎯 Contextualizada
                                 </Badge>
@@ -304,12 +304,45 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                               <div className="mt-2">
                                 <span className="font-medium text-gray-600 text-xs block mb-1">Últimas mensagens do cliente:</span>
                                 <div className="space-y-1">
-                                  {tarefa.metadata.executive_summary.recent_client_messages.map((msg, index) => (
-                                    <div key={index} className="p-2 bg-white rounded border text-xs text-gray-700 italic">
-                                      {msg}
-                                    </div>
+                                  {tarefa.metadata.executive_summary.recent_client_messages.map((msg, index) => {
+                                    // Suporte aos dois formatos: string ou objeto
+                                    const content = typeof msg === 'string' ? msg : msg.content;
+                                    const timestamp = typeof msg === 'object' && msg.timestamp ? msg.timestamp : '';
+                                    
+                                    return (
+                                      <div key={index} className="p-2 bg-white rounded border text-xs text-gray-700">
+                                        <div className="italic">{content}</div>
+                                        {timestamp && (
+                                          <div className="text-xs text-gray-500 mt-1">{timestamp}</div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {tarefa.metadata.executive_summary.message_types && Object.keys(tarefa.metadata.executive_summary.message_types).length > 0 && (
+                              <div className="mt-2">
+                                <span className="font-medium text-gray-600 text-xs block mb-1">Tipos de mensagem:</span>
+                                <div className="flex flex-wrap gap-1">
+                                  {Object.entries(tarefa.metadata.executive_summary.message_types).map(([type, count]) => (
+                                    <Badge key={type} className="bg-gray-100 text-gray-700 text-xs px-2 py-0">
+                                      {type}: {count}
+                                    </Badge>
                                   ))}
                                 </div>
+                              </div>
+                            )}
+                            
+                            {tarefa.metadata.executive_summary.last_sender && (
+                              <div className="mt-2 p-2 bg-white rounded border">
+                                <span className="font-medium text-gray-600 text-xs">Último a enviar:</span>
+                                <span className={`ml-1 text-xs font-medium ${
+                                  tarefa.metadata.executive_summary.last_sender === 'Cliente' ? 'text-blue-600' : 'text-green-600'
+                                }`}>
+                                  {tarefa.metadata.executive_summary.last_sender}
+                                </span>
                               </div>
                             )}
                           </div>

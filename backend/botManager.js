@@ -351,11 +351,57 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
             
             // Buscar todas as mensagens do chat (includeMe=true, includeNotifications=true)
             console.log(`   Buscando mensagens para ${clientPhoneNumber}...`);
-            const messagesResult = await client.getAllMessagesInChat(clientPhoneNumber, true, true);
+            
+            // Tentar diferentes métodos para obter mensagens
+            let messagesResult;
+            try {
+                // Primeiro, tentar o método mais completo
+                console.log(`   🔄 Tentando loadAndGetAllMessagesInChat...`);
+                messagesResult = await client.loadAndGetAllMessagesInChat(clientPhoneNumber, true, true);
+                console.log(`   ✅ loadAndGetAllMessagesInChat retornou ${Array.isArray(messagesResult) ? messagesResult.length : 'não-array'} mensagens`);
+            } catch (error) {
+                console.log(`   ⚠️ loadAndGetAllMessagesInChat falhou: ${error.message}`);
+                console.log(`   🔄 Tentando getAllMessagesInChat como fallback...`);
+                try {
+                    messagesResult = await client.getAllMessagesInChat(clientPhoneNumber, true, true);
+                    console.log(`   ✅ getAllMessagesInChat retornou ${Array.isArray(messagesResult) ? messagesResult.length : 'não-array'} mensagens`);
+                } catch (fallbackError) {
+                    console.log(`   ❌ getAllMessagesInChat também falhou: ${fallbackError.message}`);
+                    messagesResult = [];
+                }
+            }
+            
+            // Debug: verificar o tipo e estrutura do resultado
+            console.log(`   🔍 Debug - Tipo do resultado: ${typeof messagesResult}`);
+            console.log(`   🔍 Debug - É array: ${Array.isArray(messagesResult)}`);
+            if (messagesResult && typeof messagesResult === 'object') {
+                console.log(`   🔍 Debug - Chaves do objeto: ${Object.keys(messagesResult)}`);
+            }
             
             // Garantir que messages seja um array
             const messages = Array.isArray(messagesResult) ? messagesResult : [];
             console.log(`   Total de mensagens encontradas: ${messages.length}`);
+            
+            // Debug adicional: mostrar algumas mensagens de exemplo
+            if (messages.length > 0) {
+                console.log(`   🔍 Debug - Primeira mensagem:`);
+                console.log(`      - ID: ${messages[0].id}`);
+                console.log(`      - From: ${messages[0].from}`);
+                console.log(`      - Body: ${messages[0].body ? messages[0].body.substring(0, 50) + '...' : 'N/A'}`);
+                console.log(`      - Timestamp: ${messages[0].timestamp}`);
+                console.log(`      - FromMe: ${messages[0].fromMe}`);
+                console.log(`      - IsGroupMsg: ${messages[0].isGroupMsg}`);
+                
+                if (messages.length > 1) {
+                    console.log(`   🔍 Debug - Última mensagem:`);
+                    const lastMsg = messages[messages.length - 1];
+                    console.log(`      - ID: ${lastMsg.id}`);
+                    console.log(`      - From: ${lastMsg.from}`);
+                    console.log(`      - Body: ${lastMsg.body ? lastMsg.body.substring(0, 50) + '...' : 'N/A'}`);
+                    console.log(`      - Timestamp: ${lastMsg.timestamp}`);
+                    console.log(`      - FromMe: ${lastMsg.fromMe}`);
+                }
+            }
 
             if (!messages || messages.length === 0) {
                 console.log(`   ⚠️ Nenhuma mensagem encontrada para o cliente ${cliente.nome} (${clientPhoneNumber}).`);
@@ -394,37 +440,27 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
             console.log(`      - Mensagens do cliente: ${messagesByType.fromClient}`);
             console.log(`      - Mensagens do operador: ${messagesByType.fromOperator}`);
 
-            // Identifica todas as mensagens não respondidas em sequência
-            let lastOperatorMessageTimestamp = 0;
-            const unrespondedMessages = [];
+            // Nova lógica: processar TODAS as mensagens para criar um resumo contextual único
+            console.log(`   📝 Processando todas as mensagens para criar resumo contextual...`);
             
-            for (let i = 0; i < inboxMessages.length; i++) {
-                const message = inboxMessages[i];
-
-                // Pular mensagens de grupo (verificação adicional)
-                if (message.isGroupMsg) continue;
-
-                if (message.fromMe) {
-                    // Se encontrou mensagem do operador, processa mensagens não respondidas acumuladas
-                    if (unrespondedMessages.length > 0) {
-                        await consolidateClientTasks(cliente.cliente_id, unrespondedMessages, inboxMessages, isInitialScan);
-                        unrespondedMessages.length = 0; // Limpa o array
-                    }
-                    lastOperatorMessageTimestamp = message.timestamp;
-                } else {
-                    const messageTimestampMs = message.timestamp * 1000;
-
-                    if (messageTimestampMs > lastOperatorMessageTimestamp * 1000) {
-                        // SEMPRE processa mensagens não respondidas (removida verificação de duplicatas)
-                        unrespondedMessages.push(message);
-                        console.log(`   -> Mensagem não respondida acumulada: "${message.body ? message.body.substring(0, 50) + '...' : '[Mensagem sem corpo]'}" (ID: ${message.id})`);
-                    }
-                }
-            }
-
-            // Processa mensagens não respondidas restantes (se houver)
-            if (unrespondedMessages.length > 0) {
-                await consolidateClientTasks(cliente.cliente_id, unrespondedMessages, inboxMessages, isInitialScan);
+            // Separar mensagens por tipo para análise
+            const clientMessages = inboxMessages.filter(msg => !msg.fromMe);
+            const operatorMessages = inboxMessages.filter(msg => msg.fromMe);
+            
+            console.log(`   📊 Análise de mensagens:`);
+            console.log(`      - Mensagens do cliente: ${clientMessages.length}`);
+            console.log(`      - Mensagens do operador: ${operatorMessages.length}`);
+            
+            // Log detalhado das mensagens do cliente
+            clientMessages.forEach((msg, index) => {
+                const body = msg.body || '[Mensagem sem texto - pode ser mídia, áudio, etc.]';
+                console.log(`      Cliente ${index + 1}: "${body.substring(0, 100)}${body.length > 100 ? '...' : ''}" (Tipo: ${msg.type || 'text'})`);
+            });
+            
+            // Criar uma única tarefa de resumo contextual com TODAS as mensagens
+            if (inboxMessages.length > 0) {
+                await createContextualConversationSummary(cliente.cliente_id, inboxMessages, isInitialScan);
+                console.log(`   ✅ Resumo contextual criado para ${cliente.nome} com ${inboxMessages.length} mensagens`);
             }
 
         } catch (error) {
@@ -432,6 +468,38 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
         }
     }
     console.log(`✅ Varredura de mensagens CONTEXTUALIZADA para ${whatsappNumber} concluída.`);
+}
+
+// Nova função para criar resumo contextual de TODAS as mensagens
+async function createContextualConversationSummary(clienteId, allMessages, isInitialScan) {
+    try {
+        console.log(`   🔄 Criando resumo contextual para cliente ${clienteId} com ${allMessages.length} mensagens...`);
+        
+        // 1. Marcar todas as tarefas existentes como 'consolidada'
+        const clienteRef = db.collection('clientes').doc(clienteId);
+        const existingTasksSnapshot = await clienteRef.collection('tarefas')
+            .where('status', 'in', ['pendente', 'pendente_retroativa', 'pendente_sumario'])
+            .get();
+        
+        const batch = db.batch();
+        existingTasksSnapshot.forEach(doc => {
+            batch.update(doc.ref, { 
+                status: 'consolidada',
+                data_consolidacao: admin.firestore.FieldValue.serverTimestamp()
+            });
+        });
+        
+        if (!existingTasksSnapshot.empty) {
+            await batch.commit();
+            console.log(`   📝 ${existingTasksSnapshot.size} tarefas existentes marcadas como consolidadas`);
+        }
+        
+        // 2. Criar nova tarefa de resumo contextual
+        await createFullContextSummaryTask(clienteId, allMessages, isInitialScan);
+        
+    } catch (error) {
+        console.error(`❌ Erro ao criar resumo contextual para cliente ${clienteId}:`, error);
+    }
 }
 
 // Função para consolidar tarefas existentes e criar apenas uma tarefa de resumo por cliente
@@ -536,6 +604,78 @@ async function updateExistingSummaryTask(taskRef, unrespondedMessages, allMessag
 }
 
 // Função para gerar resumo executivo da conversa
+// Nova função para gerar resumo executivo de TODAS as mensagens
+function generateFullContextExecutiveSummary(allMessages, clientMessages, operatorMessages) {
+    try {
+        if (!allMessages || allMessages.length === 0) {
+            return {
+                total_messages: 0,
+                client_messages: 0,
+                operator_messages: 0,
+                conversation_period: 'N/A',
+                last_interaction: 'N/A',
+                recent_client_messages: [],
+                message_types: {}
+            };
+        }
+        
+        // Ordenar mensagens por timestamp
+        const sortedMessages = allMessages.sort((a, b) => a.timestamp - b.timestamp);
+        
+        // Calcular período da conversa
+        const firstMessage = sortedMessages[0];
+        const lastMessage = sortedMessages[sortedMessages.length - 1];
+        const startDate = new Date(firstMessage.timestamp * 1000).toLocaleDateString('pt-BR');
+        const endDate = new Date(lastMessage.timestamp * 1000).toLocaleDateString('pt-BR');
+        const conversationPeriod = startDate === endDate ? startDate : `${startDate} - ${endDate}`;
+        
+        // Última interação
+        const lastInteraction = new Date(lastMessage.timestamp * 1000).toLocaleString('pt-BR');
+        
+        // Últimas 5 mensagens do cliente
+        const recentClientMessages = clientMessages
+            .slice(-5)
+            .map(msg => {
+                const content = msg.body || `[${msg.type || 'Mensagem especial'}]`;
+                return {
+                    content: content.length > 100 ? content.substring(0, 100) + '...' : content,
+                    timestamp: new Date(msg.timestamp * 1000).toLocaleString('pt-BR')
+                };
+            });
+        
+        // Contar tipos de mensagem
+        const messageTypes = {};
+        allMessages.forEach(msg => {
+            const type = msg.type || 'text';
+            messageTypes[type] = (messageTypes[type] || 0) + 1;
+        });
+        
+        return {
+            total_messages: allMessages.length,
+            client_messages: clientMessages.length,
+            operator_messages: operatorMessages.length,
+            conversation_period: conversationPeriod,
+            last_interaction: lastInteraction,
+            recent_client_messages: recentClientMessages,
+            message_types: messageTypes,
+            last_sender: lastMessage.fromMe ? 'Operador' : 'Cliente'
+        };
+        
+    } catch (error) {
+        console.error('Erro ao gerar resumo executivo completo:', error);
+        return {
+            total_messages: allMessages?.length || 0,
+            client_messages: clientMessages?.length || 0,
+            operator_messages: operatorMessages?.length || 0,
+            conversation_period: 'Erro ao calcular',
+            last_interaction: 'Erro ao calcular',
+            recent_client_messages: [],
+            message_types: {},
+            error: 'Erro ao processar resumo'
+        };
+    }
+}
+
 function generateExecutiveSummary(contextHistory, unrespondedMessages) {
     try {
         const totalMessages = contextHistory.length;
@@ -579,6 +719,112 @@ function generateExecutiveSummary(contextHistory, unrespondedMessages) {
 }
 
 // Função para criar nova tarefa de resumo consolidada
+// Nova função para criar tarefa de resumo com TODAS as mensagens
+async function createFullContextSummaryTask(clienteId, allMessages, isInitialScan) {
+    try {
+        // Ordenar mensagens por timestamp
+        const sortedMessages = allMessages.sort((a, b) => a.timestamp - b.timestamp);
+        
+        // Separar mensagens por tipo
+        const clientMessages = sortedMessages.filter(msg => !msg.fromMe);
+        const operatorMessages = sortedMessages.filter(msg => msg.fromMe);
+        
+        console.log(`   📋 Criando resumo completo:`);
+        console.log(`      - Total de mensagens: ${sortedMessages.length}`);
+        console.log(`      - Mensagens do cliente: ${clientMessages.length}`);
+        console.log(`      - Mensagens do operador: ${operatorMessages.length}`);
+        
+        // Criar histórico completo da conversa
+        const conversationHistory = sortedMessages
+            .map(msg => {
+                const sender = msg.fromMe ? 'Operador' : 'Cliente';
+                const timestamp = new Date(msg.timestamp * 1000).toLocaleString('pt-BR');
+                let content = msg.body || '';
+                
+                // Identificar tipos de mensagem especiais
+                if (!content && msg.type) {
+                    switch (msg.type) {
+                        case 'image':
+                            content = '[Imagem enviada]';
+                            break;
+                        case 'audio':
+                        case 'ptt':
+                            content = '[Áudio enviado]';
+                            break;
+                        case 'video':
+                            content = '[Vídeo enviado]';
+                            break;
+                        case 'document':
+                            content = '[Documento enviado]';
+                            break;
+                        case 'sticker':
+                            content = '[Sticker enviado]';
+                            break;
+                        case 'location':
+                            content = '[Localização enviada]';
+                            break;
+                        default:
+                            content = `[Mensagem do tipo: ${msg.type}]`;
+                    }
+                }
+                
+                return `[${timestamp}] ${sender}: ${content || '[Mensagem sem conteúdo]'}`;
+            })
+            .join('\n');
+        
+        // Criar contexto para IA focando em todas as mensagens
+        const fullContext = `HISTÓRICO COMPLETO DA CONVERSA:\n${conversationHistory}\n\nINSTRUÇÃO: Analise toda a conversa acima e forneça uma resposta contextualizada considerando todo o histórico de interações entre cliente e operador.`;
+        
+        console.log(`   🤖 Gerando resposta da IA com contexto completo...`);
+        const iaResposta = await gerarRespostaIA(fullContext, sortedMessages);
+        
+        // Usar a mensagem mais recente como referência
+        const latestMessage = sortedMessages[sortedMessages.length - 1];
+        
+        // Criar resumo executivo da conversa completa
+         const executiveSummary = generateFullContextExecutiveSummary(sortedMessages, clientMessages, operatorMessages);
+         
+         console.log(`   📊 Resumo executivo gerado:`, executiveSummary);
+         
+         // Validar e limpar dados antes de salvar
+         const cleanMetadata = {
+             message_ids: sortedMessages.map(msg => msg.id || '').filter(id => id),
+             from: latestMessage.from || '',
+             type: 'full_context_summary',
+             executive_summary: executiveSummary,
+             notify_name: latestMessage.notifyName || '',
+             is_retroactive: Boolean(isInitialScan),
+             total_messages: Number(sortedMessages.length) || 0,
+             client_messages: Number(clientMessages.length) || 0,
+             operator_messages: Number(operatorMessages.length) || 0,
+             conversation_history: String(conversationHistory || '')
+         };
+         
+         // Validar timestamp antes de criar Date
+         const validTimestamp = latestMessage.timestamp && !isNaN(latestMessage.timestamp) ? 
+             latestMessage.timestamp : Date.now() / 1000;
+         
+         const tarefa = {
+             mensagem_recebida: String(fullContext || ''),
+             mensagem_sugerida: String(iaResposta || ''),
+             status: 'pendente_sumario',
+             data_criacao: admin.firestore.FieldValue.serverTimestamp(),
+             timestamp_mensagem_original: new Date(validTimestamp * 1000),
+             tags: ['venom-bot', 'resumo-contextual-completo', 'todas-mensagens'],
+             follow_up: false,
+             metadata: cleanMetadata
+         };
+         
+         const clienteRef = db.collection('clientes').doc(clienteId);
+         const tarefaRef = await clienteRef.collection('tarefas').add(tarefa);
+         
+         console.log(`   ✅ Tarefa de resumo contextual completo criada: ${tarefaRef.id}`);
+         
+     } catch (error) {
+         console.error(`❌ Erro ao criar tarefa de resumo contextual completo:`, error);
+     }
+ }
+ 
 async function createConsolidatedSummaryTask(clienteId, unrespondedMessages, allMessages, isInitialScan) {
     try {
         // Pega as últimas 30 mensagens para contexto
