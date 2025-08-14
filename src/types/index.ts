@@ -35,6 +35,15 @@ export interface Tarefa {
     is_retroactive: boolean;
     total_messages?: number; // Total de mensagens agrupadas
     context_messages?: number; // Número de mensagens de contexto
+    executive_summary?: {
+      total_messages: number;
+      client_messages: number;
+      operator_messages: number;
+      unanswered_count: number;
+      conversation_period: string;
+      recent_client_messages: string[];
+      last_interaction: string;
+    };
   };
   data_conclusao?: any; // Firebase Timestamp
   data_envio?: any; // Firebase Timestamp

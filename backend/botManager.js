@@ -379,6 +379,20 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
             }
             
             inboxMessages.sort((a, b) => a.timestamp - b.timestamp);
+            
+            // Log detalhado das mensagens encontradas
+            console.log(`   📊 Análise detalhada das mensagens para ${cliente.nome}:`);
+            console.log(`      - Total de mensagens brutas: ${messages.length}`);
+            console.log(`      - Mensagens do inbox (filtradas): ${inboxMessages.length}`);
+            console.log(`      - Período: ${new Date(inboxMessages[0]?.timestamp * 1000).toLocaleString('pt-BR')} até ${new Date(inboxMessages[inboxMessages.length - 1]?.timestamp * 1000).toLocaleString('pt-BR')}`);
+            
+            // Contar mensagens por tipo
+            const messagesByType = {
+                fromClient: inboxMessages.filter(msg => !msg.fromMe).length,
+                fromOperator: inboxMessages.filter(msg => msg.fromMe).length
+            };
+            console.log(`      - Mensagens do cliente: ${messagesByType.fromClient}`);
+            console.log(`      - Mensagens do operador: ${messagesByType.fromOperator}`);
 
             // Identifica todas as mensagens não respondidas em sequência
             let lastOperatorMessageTimestamp = 0;
@@ -497,6 +511,9 @@ async function updateExistingSummaryTask(taskRef, unrespondedMessages, allMessag
         const validTimestamp = latestMessage.timestamp && !isNaN(latestMessage.timestamp) ? 
             latestMessage.timestamp : Date.now() / 1000;
 
+        // Criar resumo executivo da conversa para o frontend
+        const executiveSummary = generateExecutiveSummary(contextHistory, unrespondedMessages);
+        
         // Validar e limpar dados antes de atualizar
         await taskRef.update({
             mensagem_recebida: String(fullContext || ''),
@@ -507,13 +524,57 @@ async function updateExistingSummaryTask(taskRef, unrespondedMessages, allMessag
             'metadata.total_messages': Number(unrespondedMessages.length) || 0,
             'metadata.context_messages': Number(contextHistory.length) || 0,
             'metadata.conversation_summary': String(conversationSummary || ''),
-            'metadata.unresponded_messages': String(allUnrespondedText || '')
+            'metadata.unresponded_messages': String(allUnrespondedText || ''),
+            'metadata.executive_summary': executiveSummary
         });
         
         console.log(`   ✅ Tarefa de resumo existente atualizada com ${unrespondedMessages.length} novas mensagens`);
     } catch (error) {
         console.error(`❌ Erro ao atualizar tarefa de resumo existente:`, error);
         throw error;
+    }
+}
+
+// Função para gerar resumo executivo da conversa
+function generateExecutiveSummary(contextHistory, unrespondedMessages) {
+    try {
+        const totalMessages = contextHistory.length;
+        const clientMessages = contextHistory.filter(msg => !msg.fromMe);
+        const operatorMessages = contextHistory.filter(msg => msg.fromMe);
+        
+        // Últimas mensagens do cliente (não respondidas)
+        const recentClientMessages = unrespondedMessages.slice(-3).map(msg => {
+            const preview = msg.body ? msg.body.substring(0, 100) : '[Mensagem sem texto]';
+            return `"${preview}${msg.body && msg.body.length > 100 ? '...' : ''}"`;
+        });
+        
+        // Período da conversa
+        const firstMessage = contextHistory[0];
+        const lastMessage = contextHistory[contextHistory.length - 1];
+        const conversationPeriod = firstMessage && lastMessage ? 
+            `${new Date(firstMessage.timestamp * 1000).toLocaleDateString('pt-BR')} - ${new Date(lastMessage.timestamp * 1000).toLocaleDateString('pt-BR')}` : 
+            'Período não disponível';
+        
+        return {
+            total_messages: totalMessages,
+            client_messages: clientMessages.length,
+            operator_messages: operatorMessages.length,
+            unanswered_count: unrespondedMessages.length,
+            conversation_period: conversationPeriod,
+            recent_client_messages: recentClientMessages,
+            last_interaction: lastMessage ? new Date(lastMessage.timestamp * 1000).toLocaleString('pt-BR') : 'Não disponível'
+        };
+    } catch (error) {
+        console.error('❌ Erro ao gerar resumo executivo:', error);
+        return {
+            total_messages: 0,
+            client_messages: 0,
+            operator_messages: 0,
+            unanswered_count: unrespondedMessages.length,
+            conversation_period: 'Erro ao calcular',
+            recent_client_messages: [],
+            last_interaction: 'Erro ao calcular'
+        };
     }
 }
 
@@ -542,11 +603,15 @@ async function createConsolidatedSummaryTask(clienteId, unrespondedMessages, all
         const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
         const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
 
+        // Criar resumo executivo da conversa para o frontend
+        const executiveSummary = generateExecutiveSummary(contextHistory, unrespondedMessages);
+        
         // Validar e limpar dados antes de salvar
         const cleanMetadata = {
             message_ids: unrespondedMessages.map(msg => msg.id || '').filter(id => id),
             from: latestMessage.from || '',
             type: 'consolidated_conversation_summary',
+            executive_summary: executiveSummary,
             notify_name: latestMessage.notifyName || '',
             is_retroactive: Boolean(isInitialScan),
             total_messages: Number(unrespondedMessages.length) || 0,

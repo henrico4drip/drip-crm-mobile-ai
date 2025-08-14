@@ -260,6 +260,60 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                             💬 Esta tarefa agrupa {tarefa.metadata.message_ids.length} mensagens não respondidas em sequência
                           </p>
                         )}
+                        
+                        {/* Resumo Executivo da Conversa */}
+                        {tarefa.metadata?.executive_summary && (
+                          <div className="mt-3 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                            <h4 className="text-xs font-semibold text-blue-800 mb-2 flex items-center">
+                              📊 Resumo da Conversa
+                            </h4>
+                            <div className="grid grid-cols-2 gap-2 text-xs">
+                              <div className="bg-white p-2 rounded border">
+                                <span className="font-medium text-gray-600">Total de mensagens:</span>
+                                <span className="ml-1 text-gray-900">{tarefa.metadata.executive_summary.total_messages}</span>
+                              </div>
+                              <div className="bg-white p-2 rounded border">
+                                <span className="font-medium text-gray-600">Não respondidas:</span>
+                                <span className="ml-1 text-red-600 font-medium">{tarefa.metadata.executive_summary.unanswered_count}</span>
+                              </div>
+                              <div className="bg-white p-2 rounded border">
+                                <span className="font-medium text-gray-600">Do cliente:</span>
+                                <span className="ml-1 text-blue-600">{tarefa.metadata.executive_summary.client_messages}</span>
+                              </div>
+                              <div className="bg-white p-2 rounded border">
+                                <span className="font-medium text-gray-600">Do operador:</span>
+                                <span className="ml-1 text-green-600">{tarefa.metadata.executive_summary.operator_messages}</span>
+                              </div>
+                            </div>
+                            
+                            {tarefa.metadata.executive_summary.conversation_period && (
+                              <div className="mt-2 p-2 bg-white rounded border">
+                                <span className="font-medium text-gray-600 text-xs">Período:</span>
+                                <span className="ml-1 text-gray-900 text-xs">{tarefa.metadata.executive_summary.conversation_period}</span>
+                              </div>
+                            )}
+                            
+                            {tarefa.metadata.executive_summary.last_interaction && (
+                              <div className="mt-2 p-2 bg-white rounded border">
+                                <span className="font-medium text-gray-600 text-xs">Última interação:</span>
+                                <span className="ml-1 text-gray-900 text-xs">{tarefa.metadata.executive_summary.last_interaction}</span>
+                              </div>
+                            )}
+                            
+                            {tarefa.metadata.executive_summary.recent_client_messages && tarefa.metadata.executive_summary.recent_client_messages.length > 0 && (
+                              <div className="mt-2">
+                                <span className="font-medium text-gray-600 text-xs block mb-1">Últimas mensagens do cliente:</span>
+                                <div className="space-y-1">
+                                  {tarefa.metadata.executive_summary.recent_client_messages.map((msg, index) => (
+                                    <div key={index} className="p-2 bg-white rounded border text-xs text-gray-700 italic">
+                                      {msg}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )}
                     
