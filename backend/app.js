@@ -158,10 +158,10 @@ app.post('/api/reprocess-contextual-tasks', async (req, res) => {
         let errors = 0;
         
         // Itera sobre todos os bots ativos
-        for (const [whatsappNumber, botData] of activeBots.entries()) {
+        for (const [whatsappNumber, client] of activeBots.entries()) {
             try {
                 console.log(`📱 Reprocessando contextualizadamente para ${whatsappNumber}...`);
-                await scanMessagesAndCreateTasks(botData.client, whatsappNumber, false);
+                await scanMessagesAndCreateTasks(client, whatsappNumber, false);
                 processed++;
                 console.log(`✅ Reprocessamento contextualizado concluído para ${whatsappNumber}`);
             } catch (error) {
@@ -550,7 +550,7 @@ app.get('/api/test-context/:contactId', async (req, res) => {
         let activeBot = null;
         let whatsappNumber = null;
         
-        for (const [number, botData] of activeBots.entries()) {
+        for (const [number, client] of activeBots.entries()) {
             // Verificar se este bot tem acesso ao cliente
             try {
                 const operatorUser = await require('./botManager').findOperatorByPhone ? 
@@ -564,7 +564,7 @@ app.get('/api/test-context/:contactId', async (req, res) => {
                         .get();
                     
                     if (!clienteSnapshot.empty) {
-                        activeBot = botData.client;
+                        activeBot = client;
                         whatsappNumber = number;
                         break;
                     }
@@ -669,7 +669,7 @@ app.get('/api/list-clients', async (req, res) => {
         const clientsList = [];
         
         // Verificar todos os bots ativos
-        for (const [whatsappNumber, botData] of activeBots.entries()) {
+        for (const [whatsappNumber, client] of activeBots.entries()) {
             try {
                 const operatorUser = await require('./botManager').findOperatorByPhone(whatsappNumber);
                 
