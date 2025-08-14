@@ -1,12 +1,13 @@
-
+// src/components/Dashboard.tsx
 import React, { useEffect, useState } from 'react';
-import { collection, query, where, orderBy, onSnapshot, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore'; // Importar 'limit'
 import { db } from '@/lib/firebase';
 import { useAuth } from '@/contexts/AuthContext';
 import { Cliente, Tarefa } from '@/types';
 import ClientCard from './ClientCard';
 import ClientDetails from './ClientDetails';
 import RetroactiveAIAnalysis from './RetroactiveAIAnalysis';
+import WhatsAppQRCode from './WhatsAppQRCode';
 import { Button } from '@/components/ui/button';
 import { LogOut, AlertCircle, RefreshCw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -18,13 +19,14 @@ const Dashboard: React.FC = () => {
   const [indexError, setIndexError] = useState(false);
   const [loading, setLoading] = useState(true);
   const { user, userData, logout } = useAuth();
+  
+  const [refreshKey, setRefreshKey] = useState(0);
 
   useEffect(() => {
     if (!user) return;
 
     console.log('🔍 DASHBOARD - Iniciando busca de clientes');
     console.log('- User UID:', user.uid);
-    console.log('- User Email:', user.email);
     
     setLoading(true);
     setIndexError(false);
@@ -33,25 +35,23 @@ const Dashboard: React.FC = () => {
       try {
         console.log('📋 STEP 1 - Buscando clientes...');
         
-        // Buscar clientes do usuário
+        // Buscar TODOS os clientes do usuário primeiro, depois ordenar no frontend
         const clientesQuery = query(
           collection(db, 'clientes'),
           where('usuario_id', '==', user.uid)
         );
         
         const clientesSnapshot = await getDocs(clientesQuery);
-        console.log('✅ Clientes encontrados:', clientesSnapshot.size);
+        console.log('✅ Clientes encontrados (top 12):', clientesSnapshot.size);
         
         if (clientesSnapshot.empty) {
-          console.log('❌ Nenhum cliente encontrado para o usuário:', user.uid);
           setClientes([]);
           setClientTaskCounts({});
           setLoading(false);
           return;
         }
 
-        // Processar clientes
-        const clientesData: Cliente[] = [];
+        const clientsData: Cliente[] = [];
         const taskCounts: {[key: string]: number} = {};
 
         for (const clienteDoc of clientesSnapshot.docs) {
@@ -60,72 +60,48 @@ const Dashboard: React.FC = () => {
             cliente_id: clienteDoc.id,
             ...clienteData
           } as Cliente;
-          
-          console.log(`📋 Cliente encontrado: ${cliente.nome} (ID: ${clienteDoc.id})`);
-          clientesData.push(cliente);
+          clientsData.push(cliente);
 
-          // Buscar tarefas pendentes para este cliente
-          console.log(`🔍 STEP 2 - Buscando tarefas para cliente: ${cliente.nome}`);
+          // Buscar apenas tarefas de resumo pendentes
+          const tarefasQuery = query(
+            collection(db, 'clientes', clienteDoc.id, 'tarefas'),
+            where('status', '==', 'pendente_sumario'), // Apenas tarefas de resumo
+            orderBy('data_criacao', 'desc')
+          );
           
-          try {
-            const tarefasQuery = query(
-              collection(db, 'clientes', clienteDoc.id, 'tarefas'),
-              where('status', '==', 'pendente'),
-              orderBy('data_criacao', 'desc')
-            );
-            
-            const tarefasSnapshot = await getDocs(tarefasQuery);
-            const pendingCount = tarefasSnapshot.size;
-            
-            console.log(`📊 Cliente ${cliente.nome} - Tarefas pendentes: ${pendingCount}`);
-            
-            // Log detalhado das tarefas
-            tarefasSnapshot.docs.forEach((tarefaDoc, index) => {
-              const tarefaData = tarefaDoc.data();
-              console.log(`📋 Tarefa ${index + 1}:`, {
-                id: tarefaDoc.id,
-                status: tarefaData.status,
-                mensagem_preview: tarefaData.mensagem_recebida?.substring(0, 30) + '...',
-                data_criacao: tarefaData.data_criacao?.toDate?.()?.toLocaleString(),
-                cliente_nome: tarefaData.cliente_nome,
-                cliente_telefone: tarefaData.cliente_telefone
-              });
-            });
-            
-            taskCounts[clienteDoc.id] = pendingCount;
-            
-          } catch (tarefaError) {
-            console.error(`❌ Erro ao buscar tarefas do cliente ${cliente.nome}:`, tarefaError);
-            taskCounts[clienteDoc.id] = 0;
-          }
+          const tarefasSnapshot = await getDocs(tarefasQuery);
+          taskCounts[clienteDoc.id] = tarefasSnapshot.size;
         }
 
-        // Ordenar clientes por última mensagem
-        try {
-          clientesData.sort((a, b) => {
-            const timeA = a.timestamp_ultima_mensagem?.toDate?.() || new Date(0);
-            const timeB = b.timestamp_ultima_mensagem?.toDate?.() || new Date(0);
-            return timeB.getTime() - timeA.getTime();
-          });
-          console.log('✅ Clientes ordenados por última mensagem');
-        } catch (error) {
-          console.log('⚠️ Erro ao ordenar clientes, mantendo ordem original:', error);
-        }
-
-        console.log('📊 RESUMO FINAL:');
-        console.log('- Total de clientes:', clientesData.length);
-        console.log('- Contagem de tarefas por cliente:', taskCounts);
-        console.log('- Total de tarefas pendentes:', Object.values(taskCounts).reduce((a, b) => a + b, 0));
+        // Ordenar clientes: APENAS por taxa de conversão (prioridade absoluta)
+        const sortedClients = clientsData.sort((a, b) => {
+          // Primeiro critério: taxa de conversão (maior primeiro)
+          const aTaxa = a.taxa_conversao || 0;
+          const bTaxa = b.taxa_conversao || 0;
+          if (aTaxa !== bTaxa) return bTaxa - aTaxa;
+          
+          // Segundo critério: última mensagem (mais recente primeiro)
+          const aTime = a.timestamp_ultima_mensagem?.toDate?.()?.getTime() || 0;
+          const bTime = b.timestamp_ultima_mensagem?.toDate?.()?.getTime() || 0;
+          return bTime - aTime;
+        });
         
-        setClientes(clientesData);
+        // Limitar a 12 clientes após ordenação
+        const clientsToDisplay = sortedClients.slice(0, 12);
+        
+        console.log('📊 RESUMO FINAL:');
+        console.log('- Total de clientes encontrados:', clientsData.length);
+        console.log('- Total de clientes exibidos:', clientsToDisplay.length);
+        console.log('- Total de tarefas pendentes (resumo):', Object.values(taskCounts).reduce((a, b) => a + b, 0));
+        
+        setClientes(clientsToDisplay);
         setClientTaskCounts(taskCounts);
         setLoading(false);
         
-      } catch (error) {
+      } catch (error: any) {
         console.error('❌ Erro geral ao carregar dados:', error);
         
         if (error.code === 'failed-precondition' && error.message.includes('index')) {
-          console.log('⚠️ Erro de índice detectado');
           setIndexError(true);
         }
         
@@ -134,7 +110,7 @@ const Dashboard: React.FC = () => {
     };
 
     loadClientsAndTasks();
-  }, [user]);
+  }, [user, refreshKey]);
 
   const handleLogout = async () => {
     try {
@@ -144,13 +120,18 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  const handleAnalysisComplete = () => {
+    console.log('🔄 Análise retroativa concluída. Forçando recarga do dashboard...');
+    setRefreshKey(prevKey => prevKey + 1);
+  };
+
   const retryWithIndex = () => {
     console.log('🔄 Tentando novamente...');
     setIndexError(false);
     setLoading(true);
-    window.location.reload();
+    setRefreshKey(prevKey => prevKey + 1);
   };
-
+  
   if (selectedCliente) {
     return (
       <ClientDetails 
@@ -162,7 +143,6 @@ const Dashboard: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 to-blue-50">
-      {/* Header */}
       <div className="bg-white shadow-sm border-b">
         <div className="max-w-6xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between">
@@ -194,10 +174,8 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* Content */}
       <div className="max-w-6xl mx-auto px-4 py-6 space-y-6">
         
-        {/* Alert para problema de índice */}
         {indexError && (
           <Alert className="border-yellow-200 bg-yellow-50">
             <AlertCircle className="h-4 w-4 text-yellow-600" />
@@ -205,23 +183,24 @@ const Dashboard: React.FC = () => {
               <div className="space-y-2">
                 <p className="font-medium">📋 Índice necessário</p>
                 <p className="text-sm">
-                  O Firebase precisa de um índice para ordenação. Funcionando sem ordenação por enquanto.
+                  O Firebase precisa de um índice para ordenação. Clique no link para criar o índice ou tente novamente.
                 </p>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={retryWithIndex}
-                  className="text-xs"
-                >
-                  <RefreshCw className="w-3 h-3 mr-1" />
-                  Tentar novamente
-                </Button>
+                <div className="flex space-x-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={retryWithIndex}
+                    className="text-xs"
+                  >
+                    <RefreshCw className="w-3 h-3 mr-1" />
+                    Tentar novamente
+                  </Button>
+                </div>
               </div>
             </AlertDescription>
           </Alert>
         )}
 
-        {/* Debug Info */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
           <h3 className="font-medium text-blue-800 mb-2">🔍 Status do Sistema</h3>
           <div className="text-sm text-blue-700 space-y-1">
@@ -235,13 +214,16 @@ const Dashboard: React.FC = () => {
           </div>
         </div>
 
-        {/* Análise Retroativa */}
-        <RetroactiveAIAnalysis />
+        <RetroactiveAIAnalysis onAnalysisComplete={handleAnalysisComplete} />
+        
+        {/* WhatsApp QR Code Section */}
+        {userData?.whatsapp_comercial && (
+          <WhatsAppQRCode whatsappNumber={userData.whatsapp_comercial} />
+        )}
 
-        {/* Lista de Clientes */}
         <div>
           <h2 className="text-lg font-semibold text-gray-900 mb-4">
-            Seus Clientes
+            Clientes (Tarefas Pendentes → Taxa de Conversão → Atividade Recente)
           </h2>
           
           {loading ? (
@@ -253,10 +235,10 @@ const Dashboard: React.FC = () => {
             <div className="text-center py-12">
               <div className="text-gray-400 text-6xl mb-4">📱</div>
               <h3 className="text-lg font-medium text-gray-900 mb-2">
-                Nenhum cliente encontrado
+                Nenhum cliente encontrado.
               </h3>
               <p className="text-gray-600 mb-4">
-                Aguardando mensagens do WhatsApp...
+                Aguardando mensagens do WhatsApp para criar clientes e tarefas.
               </p>
               <div className="bg-gray-50 p-4 rounded-lg text-left max-w-md mx-auto">
                 <p className="text-sm text-gray-700 mb-2"><strong>Verificações:</strong></p>

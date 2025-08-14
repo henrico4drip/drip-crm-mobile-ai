@@ -1,20 +1,13 @@
 // botManager.js
 const venom = require('venom-bot');
-const admin = require('firebase-admin'); // Certifique-se de que o Firebase Admin já foi inicializado em outro lugar ou aqui
-const axios = require('axios'); // Para a função gerarRespostaIA
-const cron = require('node-cron'); // Para agendamento
-const { db } = require('./firebaseService'); // Assumindo que você tem um firebaseService.js
-const { gerarRespostaIA } = require('./aiService'); // Assumindo um aiService.js
+const admin = require('firebase-admin');
+const axios = require('axios');
+const cron = require('node-cron');
+const { db } = require('./firebaseService');
+const { gerarRespostaIA } = require('./aiService');
 
-// Map para armazenar as instâncias ativas do Venom-Bot
-// Key: whatsapp_number, Value: client (venom-bot instance)
 const activeBots = new Map();
-
-// Flag para controlar a execução da varredura retroativa na inicialização
-// Defina como 'false' APÓS a primeira execução bem-sucedida de cada bot
 const RUN_RETROACTIVE_SCAN_ON_STARTUP = true;
-
-// --- Funções Auxiliares (adaptadas do seu código original) ---
 
 async function findOperatorByPhone(phoneNumber) {
     try {
@@ -61,9 +54,14 @@ async function getOrCreateClient(telefone, nome, operatorUserId) {
             nome: nome || `Cliente ${telefone}`,
             usuario_id: operatorUserId,
             timestamp_ultima_mensagem: admin.firestore.FieldValue.serverTimestamp(),
-            criado_em: admin.firestore.FieldValue.serverTimestamp()
+            criado_em: admin.firestore.FieldValue.serverTimestamp(),
+            // Novos campos para ranking
+            total_tarefas_resumo_geradas: 0,
+            total_tarefas_resumo_convertidas: 0,
+            taxa_conversao: 0
         };
         const docRef = await clientesRef.add(novoCliente);
+        console.log(`✅ Cliente ${docRef.id} criado com sucesso.`);
         return { cliente_id: docRef.id, ...novoCliente };
     } catch (error) {
         console.error('❌ Erro ao obter/criar cliente:', error);
@@ -71,24 +69,196 @@ async function getOrCreateClient(telefone, nome, operatorUserId) {
     }
 }
 
+// Função auxiliar para recalcular a taxa de conversão do cliente
+async function updateClientConversionMetrics(clienteId) {
+    const clienteRef = db.collection('clientes').doc(clienteId);
+    try {
+        console.log(`🔍 Iniciando atualização de métricas para cliente ${clienteId}...`);
+        
+        const tarefasSnapshot = await clienteRef.collection('tarefas')
+            .where('status', 'in', ['pendente_sumario', 'enviada', 'concluída']) // Contamos as geradas/ativas
+            .get();
+
+        console.log(`📋 Total de tarefas encontradas: ${tarefasSnapshot.size}`);
+
+        let generated = 0;
+        let converted = 0;
+        const statusCounts = {};
+
+        tarefasSnapshot.forEach(doc => {
+            const status = doc.data().status;
+            statusCounts[status] = (statusCounts[status] || 0) + 1;
+            
+            if (status === 'pendente_sumario' || status === 'enviada' || status === 'concluída') {
+                generated++;
+            }
+            if (status === 'enviada' || status === 'concluída') {
+                converted++;
+            }
+        });
+
+        console.log(`📊 Contagem por status:`, statusCounts);
+        
+        const taxaConversao = generated > 0 ? (converted / generated) * 100 : 0;
+
+        await clienteRef.update({
+            total_tarefas_resumo_geradas: generated,
+            total_tarefas_resumo_convertidas: converted,
+            taxa_conversao: taxaConversao
+        });
+        
+        console.log(`✅ Métricas atualizadas para cliente ${clienteId}:`);
+        console.log(`   - Tarefas Geradas: ${generated}`);
+        console.log(`   - Tarefas Convertidas: ${converted}`);
+        console.log(`   - Taxa de Conversão: ${taxaConversao.toFixed(2)}%`);
+        
+    } catch (error) {
+        console.error(`❌ Erro ao atualizar métricas de conversão para cliente ${clienteId}:`, error);
+        throw error;
+    }
+}
+
+
+// Função para criar tarefa contextualizada com histórico completo
+async function createContextualizedTask(clienteId, unrespondedMessages, chatHistory, isRetroactive = false) {
+    try {
+        if (!clienteId || !unrespondedMessages.length) {
+            console.error('❌ createContextualizedTask: clienteId ou mensagens não respondidas inválidas.');
+            return;
+        }
+
+        // Pega as últimas 30 mensagens para contexto mais amplo
+        const contextHistory = chatHistory
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .slice(-30); // Últimas 30 mensagens para contexto mais rico
+
+        // Cria um resumo contextual da conversa completa
+        const conversationSummary = contextHistory
+            .map(msg => {
+                const sender = msg.fromMe ? 'Operador' : 'Cliente';
+                const timestamp = new Date(msg.timestamp * 1000).toLocaleString('pt-BR');
+                return `[${timestamp}] ${sender}: ${msg.body || '[Mensagem sem texto]'}`;
+            })
+            .join('\n');
+
+        // Agrupa todas as mensagens não respondidas
+        const allUnrespondedText = unrespondedMessages
+            .map(msg => msg.body || '')
+            .filter(text => text.trim())
+            .join('\n\n');
+
+        // Contexto completo para a IA incluindo histórico da conversa
+        const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${allUnrespondedText}`;
+
+        // Gera resposta da IA com contexto completo da conversa
+        const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
+
+        // Pega a mensagem mais recente para metadados
+        const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
+
+        // Validar e limpar dados antes de salvar
+        const cleanMetadata = {
+            message_ids: unrespondedMessages.map(msg => msg.id || '').filter(id => id),
+            from: String(latestMessage.from || ''),
+            type: 'contextual_conversation_summary',
+            notify_name: String(latestMessage.notifyName || ''),
+            is_retroactive: Boolean(isRetroactive),
+            total_messages: Number(unrespondedMessages.length) || 0,
+            context_messages: Number(contextHistory.length) || 0,
+            conversation_summary: String(conversationSummary || ''),
+            unresponded_messages: String(allUnrespondedText || '')
+        };
+
+        // Validar timestamp antes de criar Date
+        const validTimestamp = latestMessage.timestamp && !isNaN(latestMessage.timestamp) ? 
+            latestMessage.timestamp : Date.now() / 1000;
+
+        const tarefa = {
+            mensagem_recebida: String(fullContext || ''), // Contexto completo da conversa
+            mensagem_sugerida: String(iaResposta || ''),
+            status: isRetroactive ? 'pendente_retroativa' : 'pendente_sumario',
+            data_criacao: admin.firestore.FieldValue.serverTimestamp(),
+            timestamp_mensagem_original: new Date(validTimestamp * 1000),
+            tags: ['venom-bot', 'contextualizada', 'conversa-completa'],
+            follow_up: false,
+            metadata: cleanMetadata
+        };
+
+        if (isRetroactive) {
+            tarefa.tags.push('retroativa');
+        } else {
+            tarefa.tags.push('nova');
+        }
+
+        console.log(`🚀 Criando tarefa contextualizada para cliente ${clienteId}:`);
+        console.log(`   - Mensagens não respondidas: ${unrespondedMessages.length}`);
+        console.log(`   - Mensagens de contexto: ${contextHistory.length}`);
+        console.log(`   - Status: ${tarefa.status}`);
+        console.log(`   - É retroativa: ${isRetroactive}`);
+        
+        const tarefaRef = await db.collection('clientes').doc(clienteId).collection('tarefas').add(tarefa);
+        console.log(`✅ Tarefa contextualizada criada com sucesso: ${tarefaRef.id} para cliente: ${clienteId}`);
+
+        // Atualiza timestamp da última mensagem
+        const clienteDocRef = db.collection('clientes').doc(clienteId);
+        const clienteDoc = await clienteDocRef.get();
+        const currentLastTimestamp = clienteDoc.data()?.timestamp_ultima_mensagem?.toDate()?.getTime() || 0;
+        const messageTimestampMs = latestMessage.timestamp * 1000;
+
+        if (messageTimestampMs > currentLastTimestamp) {
+            await clienteDocRef.update({
+                ultima_mensagem: latestMessage.body || '',
+                timestamp_ultima_mensagem: admin.firestore.FieldValue.serverTimestamp()
+            });
+            console.log(`⏱️ Timestamp da última mensagem atualizado para cliente ${clienteId}.`);
+        }
+        
+        // Atualiza métricas de conversão após criar a tarefa
+        console.log(`📊 Atualizando métricas de conversão após criar tarefa...`);
+        await updateClientConversionMetrics(clienteId);
+        
+        return tarefaRef.id;
+    } catch (error) {
+        console.error(`❌ Erro CRÍTICO ao criar tarefa contextualizada para cliente ${clienteId}:`, error.message, error.code || '', error.details || '');
+        console.error('Detalhes do erro:', JSON.stringify(error, null, 2));
+        throw error;
+    }
+}
+
+// Função legacy mantida para compatibilidade
 async function saveMensagemAsTarefa(clienteId, message, isRetroactive = false) {
     try {
-        const iaResposta = await gerarRespostaIA(message.body || '');
+        if (!clienteId) {
+            console.error('❌ saveMensagemAsTarefa: clienteId é nulo ou indefinido. Não é possível salvar a tarefa.');
+            return;
+        }
+        
+        // Nesta versão, a IA é chamada apenas com o corpo da mensagem individual.
+        // O histórico é passado apenas no reprocessTasks.js
+        const iaResposta = await gerarRespostaIA(message.body || ''); 
+
+        // Validar e limpar dados antes de salvar
+        const cleanMetadata = {
+            message_id: String(message.id || ''),
+            from: String(message.from || ''),
+            type: String(message.type || ''),
+            notify_name: String(message.notifyName || ''),
+            is_retroactive: Boolean(isRetroactive)
+        };
+
+        // Validar timestamp antes de criar Date
+        const validTimestamp = message.timestamp && !isNaN(message.timestamp) ? 
+            message.timestamp : Date.now() / 1000;
+
         const tarefa = {
-            mensagem_recebida: message.body || '',
-            mensagem_sugerida: iaResposta,
+            mensagem_recebida: String(message.body || ''),
+            mensagem_sugerida: String(iaResposta || ''),
             status: isRetroactive ? 'pendente_retroativa' : 'pendente',
             data_criacao: admin.firestore.FieldValue.serverTimestamp(),
-            timestamp_mensagem_original: new Date(message.timestamp * 1000),
+            timestamp_mensagem_original: new Date(validTimestamp * 1000),
             tags: ['venom-bot', 'recebida'],
             follow_up: false,
-            metadata: {
-                message_id: message.id,
-                from: message.from,
-                type: message.type,
-                notify_name: message.notifyName,
-                is_retroactive: isRetroactive
-            }
+            metadata: cleanMetadata
         };
 
         if (isRetroactive) {
@@ -98,6 +268,7 @@ async function saveMensagemAsTarefa(clienteId, message, isRetroactive = false) {
         }
 
         const tarefaRef = await db.collection('clientes').doc(clienteId).collection('tarefas').add(tarefa);
+        console.log('📝 Tarefa criada com sucesso:', tarefaRef.id, 'para cliente:', clienteId);
 
         const clienteDocRef = db.collection('clientes').doc(clienteId);
         const clienteDoc = await clienteDocRef.get();
@@ -109,11 +280,12 @@ async function saveMensagemAsTarefa(clienteId, message, isRetroactive = false) {
                 ultima_mensagem: message.body || '',
                 timestamp_ultima_mensagem: admin.firestore.FieldValue.serverTimestamp()
             });
+            console.log(`⏱️ Timestamp da última mensagem atualizado para cliente ${clienteId}.`);
         }
-        console.log('📝 Tarefa criada com sucesso:', tarefaRef.id);
         return tarefaRef.id;
     } catch (error) {
-        console.error('❌ Erro ao salvar tarefa:', error);
+        console.error(`❌ Erro CRÍTICO ao salvar tarefa para cliente ${clienteId}:`, error.message, error.code || '', error.details || '');
+        console.error('Detalhes do erro:', JSON.stringify(error, null, 2));
         throw error;
     }
 }
@@ -129,13 +301,11 @@ async function enviarMensagem(client, telefone, mensagem) {
     }
 }
 
-// Adaptação da sua função de varredura retroativa
 async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan = false) {
-    console.log(`🔍 Iniciando varredura de mensagens para ${whatsappNumber} (Inicial: ${isInitialScan})...`);
+    console.log(`🔍 Iniciando varredura de mensagens CONTEXTUALIZADA para ${whatsappNumber} (Inicial: ${isInitialScan})...`);
 
     let clientes = [];
     try {
-        // Obter apenas clientes associados a este operador
         const operatorUser = await findOperatorByPhone(whatsappNumber);
         if (!operatorUser) {
             console.warn(`Operador para ${whatsappNumber} não encontrado. Ignorando varredura.`);
@@ -153,70 +323,285 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
         return;
     }
 
-    console.log(`Encontrados ${clientes.length} clientes para ${whatsappNumber}. Processando histórico...`);
+    console.log(`Encontrados ${clientes.length} clientes para ${whatsappNumber}. Processando histórico contextualizado...`);
 
     for (const cliente of clientes) {
-        const clientPhoneNumber = cliente.telefone + '@c.us';
-        console.log(`\n--- Processando histórico do cliente: ${cliente.nome} (${cliente.telefone}) para ${whatsappNumber} ---`);
+        // Extrair telefone do ID do documento (formato: numero@c.us) ou usar o nome se for numérico
+        const telefoneFromId = cliente.cliente_id ? cliente.cliente_id.replace('@c.us', '') : null;
+        const telefoneFromNome = cliente.nome && /^\d+$/.test(cliente.nome) ? cliente.nome : null;
+        const telefone = cliente.telefone || telefoneFromId || telefoneFromNome;
+        
+        if (!telefone) {
+            console.log(`   ⚠️ Não foi possível determinar o telefone para o cliente ${cliente.nome} (ID: ${cliente.cliente_id}). Pulando...`);
+            continue;
+        }
+        
+        const clientPhoneNumber = telefone + '@c.us';
+        console.log(`\n--- Processando histórico CONTEXTUALIZADO do cliente: ${cliente.nome} (${telefone}) para ${whatsappNumber} ---`);
 
         try {
-            // No futuro, para varreduras diárias, esta busca pode ser otimizada para pegar apenas novas mensagens
-            const messages = await client.getAllMessagesInChat(clientPhoneNumber, true, false);
+            // Verificar se o chat existe antes de buscar mensagens
+            console.log(`   Verificando se o chat existe para ${clientPhoneNumber}...`);
+            const chatExists = await client.getChatById(clientPhoneNumber).catch(() => null);
+            
+            if (!chatExists) {
+                console.log(`   ⚠️ Chat não encontrado para ${cliente.nome} (${clientPhoneNumber}). Pulando...`);
+                continue;
+            }
+            
+            // Buscar todas as mensagens do chat (includeMe=true, includeNotifications=true)
+            console.log(`   Buscando mensagens para ${clientPhoneNumber}...`);
+            const messagesResult = await client.getAllMessagesInChat(clientPhoneNumber, true, true);
+            
+            // Garantir que messages seja um array
+            const messages = Array.isArray(messagesResult) ? messagesResult : [];
+            console.log(`   Total de mensagens encontradas: ${messages.length}`);
 
             if (!messages || messages.length === 0) {
-                console.log(`   Nenhuma mensagem encontrada para o cliente ${cliente.nome}.`);
+                console.log(`   ⚠️ Nenhuma mensagem encontrada para o cliente ${cliente.nome} (${clientPhoneNumber}).`);
+                console.log(`   Isso pode indicar que o chat não existe ou não há histórico de mensagens.`);
                 continue;
             }
 
-            messages.sort((a, b) => a.timestamp - b.timestamp);
+            // Filtrar apenas mensagens de conversas diretas (inbox) - excluir grupos e status
+            const inboxMessages = messages.filter(msg => {
+                return !msg.isGroupMsg && // Não é mensagem de grupo
+                       !msg.from.includes('@g.us') && // Não é de grupo
+                       !msg.from.includes('status@broadcast') && // Não é status
+                       msg.type !== 'notification'; // Não é notificação
+            });
+            
+            console.log(`   Mensagens do inbox filtradas: ${inboxMessages.length} de ${messages.length} total`);
+            
+            if (inboxMessages.length === 0) {
+                console.log(`   ⚠️ Nenhuma mensagem do inbox encontrada para ${cliente.nome}.`);
+                continue;
+            }
+            
+            inboxMessages.sort((a, b) => a.timestamp - b.timestamp);
 
+            // Identifica todas as mensagens não respondidas em sequência
             let lastOperatorMessageTimestamp = 0;
-            // Se for uma varredura inicial (ao conectar o QR), consideramos todas as mensagens.
-            // Se não for inicial (varredura agendada), precisamos de um ponto de corte.
-            // Por enquanto, vamos manter a lógica atual de "não respondida".
-            // TODO: Implementar lógica de "apenas novas mensagens desde a última varredura" para as tarefas agendadas.
+            const unrespondedMessages = [];
+            
+            for (let i = 0; i < inboxMessages.length; i++) {
+                const message = inboxMessages[i];
 
-            for (let i = 0; i < messages.length; i++) {
-                const message = messages[i];
-
+                // Pular mensagens de grupo (verificação adicional)
                 if (message.isGroupMsg) continue;
 
                 if (message.fromMe) {
+                    // Se encontrou mensagem do operador, processa mensagens não respondidas acumuladas
+                    if (unrespondedMessages.length > 0) {
+                        await consolidateClientTasks(cliente.cliente_id, unrespondedMessages, inboxMessages, isInitialScan);
+                        unrespondedMessages.length = 0; // Limpa o array
+                    }
                     lastOperatorMessageTimestamp = message.timestamp;
                 } else {
                     const messageTimestampMs = message.timestamp * 1000;
 
                     if (messageTimestampMs > lastOperatorMessageTimestamp * 1000) {
-                        const existingTasksSnapshot = await db.collection('clientes')
-                            .doc(cliente.cliente_id)
-                            .collection('tarefas')
-                            .where('metadata.message_id', '==', message.id)
-                            .get();
-
-                        if (existingTasksSnapshot.empty) {
-                            console.log(`   -> Mensagem não respondida identificada: "${message.body ? message.body.substring(0, 50) + '...' : '[Mensagem sem corpo]'}" (ID: ${message.id})`);
-                            await saveMensagemAsTarefa(cliente.cliente_id, message, isInitialScan); // Use isInitialScan para status
-                        } else {
-                            console.log(`   -> Tarefa já existe para mensagem: "${message.body ? message.body.substring(0, 50) + '...' : '[Mensagem sem corpo]'}" (ID: ${message.id})`);
-                        }
+                        // SEMPRE processa mensagens não respondidas (removida verificação de duplicatas)
+                        unrespondedMessages.push(message);
+                        console.log(`   -> Mensagem não respondida acumulada: "${message.body ? message.body.substring(0, 50) + '...' : '[Mensagem sem corpo]'}" (ID: ${message.id})`);
                     }
                 }
             }
+
+            // Processa mensagens não respondidas restantes (se houver)
+            if (unrespondedMessages.length > 0) {
+                await consolidateClientTasks(cliente.cliente_id, unrespondedMessages, inboxMessages, isInitialScan);
+            }
+
         } catch (error) {
             console.error(`❌ Erro crítico ao processar histórico do cliente ${cliente.nome} (${cliente.telefone}) para ${whatsappNumber}:`, error);
         }
     }
-    console.log(`✅ Varredura de mensagens para ${whatsappNumber} concluída.`);
+    console.log(`✅ Varredura de mensagens CONTEXTUALIZADA para ${whatsappNumber} concluída.`);
 }
 
-// --- Funções de Gerenciamento do Bot ---
+// Função para consolidar tarefas existentes e criar apenas uma tarefa de resumo por cliente
+async function consolidateClientTasks(clienteId, unrespondedMessages, allMessages, isInitialScan) {
+    try {
+        if (unrespondedMessages.length === 0) return;
 
-/**
- * Inicia uma instância do Venom-Bot para um número de WhatsApp específico.
- * @param {string} whatsappNumber O número de telefone do WhatsApp (ex: 555195980420).
- * @param {Function} qrCallback Callback para enviar o QR Code ao frontend.
- * @returns {Promise<any>} A instância do cliente Venom-Bot.
- */
+        console.log(`   🔄 Consolidando tarefas para cliente ${clienteId}...`);
+        
+        // 1. Marcar todas as tarefas existentes como 'consolidada'
+        const clienteRef = db.collection('clientes').doc(clienteId);
+        const existingTasksSnapshot = await clienteRef.collection('tarefas')
+            .where('status', 'in', ['pendente', 'pendente_retroativa', 'pendente_sumario'])
+            .get();
+        
+        const batch = db.batch();
+        existingTasksSnapshot.forEach(doc => {
+            batch.update(doc.ref, { 
+                status: 'consolidada',
+                data_consolidacao: admin.firestore.FieldValue.serverTimestamp()
+            });
+        });
+        
+        if (!existingTasksSnapshot.empty) {
+            await batch.commit();
+            console.log(`   ✅ ${existingTasksSnapshot.size} tarefas antigas marcadas como consolidadas`);
+        }
+        
+        // 2. Verificar se já existe uma tarefa de resumo ativa
+        const summaryTaskSnapshot = await clienteRef.collection('tarefas')
+            .where('status', '==', 'pendente_sumario')
+            .limit(1)
+            .get();
+        
+        if (!summaryTaskSnapshot.empty) {
+            console.log(`   ℹ️ Cliente ${clienteId} já possui tarefa de resumo ativa. Atualizando...`);
+            // Atualizar a tarefa existente com novo contexto
+            const existingTaskRef = summaryTaskSnapshot.docs[0].ref;
+            await updateExistingSummaryTask(existingTaskRef, unrespondedMessages, allMessages);
+        } else {
+            // 3. Criar nova tarefa de resumo consolidada
+            await createConsolidatedSummaryTask(clienteId, unrespondedMessages, allMessages, isInitialScan);
+        }
+        
+    } catch (error) {
+        console.error(`❌ Erro ao consolidar tarefas para cliente ${clienteId}:`, error);
+        throw error;
+    }
+}
+
+// Função para atualizar tarefa de resumo existente
+async function updateExistingSummaryTask(taskRef, unrespondedMessages, allMessages) {
+    try {
+        // Pega as últimas 30 mensagens para contexto
+        const contextHistory = allMessages
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .slice(-30);
+
+        const conversationSummary = contextHistory
+            .map(msg => {
+                const sender = msg.fromMe ? 'Operador' : 'Cliente';
+                const timestamp = new Date(msg.timestamp * 1000).toLocaleString('pt-BR');
+                return `[${timestamp}] ${sender}: ${msg.body || '[Mensagem sem texto]'}`;
+            })
+            .join('\n');
+
+        const allUnrespondedText = unrespondedMessages
+            .map(msg => msg.body || '')
+            .filter(text => text.trim())
+            .join('\n\n');
+
+        const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${allUnrespondedText}`;
+        const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
+        const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
+
+        // Validar timestamp antes de criar Date
+        const validTimestamp = latestMessage.timestamp && !isNaN(latestMessage.timestamp) ? 
+            latestMessage.timestamp : Date.now() / 1000;
+
+        // Validar e limpar dados antes de atualizar
+        await taskRef.update({
+            mensagem_recebida: String(fullContext || ''),
+            mensagem_sugerida: String(iaResposta || ''),
+            data_atualizacao: admin.firestore.FieldValue.serverTimestamp(),
+            timestamp_mensagem_original: new Date(validTimestamp * 1000),
+            'metadata.message_ids': unrespondedMessages.map(msg => msg.id || '').filter(id => id),
+            'metadata.total_messages': Number(unrespondedMessages.length) || 0,
+            'metadata.context_messages': Number(contextHistory.length) || 0,
+            'metadata.conversation_summary': String(conversationSummary || ''),
+            'metadata.unresponded_messages': String(allUnrespondedText || '')
+        });
+        
+        console.log(`   ✅ Tarefa de resumo existente atualizada com ${unrespondedMessages.length} novas mensagens`);
+    } catch (error) {
+        console.error(`❌ Erro ao atualizar tarefa de resumo existente:`, error);
+        throw error;
+    }
+}
+
+// Função para criar nova tarefa de resumo consolidada
+async function createConsolidatedSummaryTask(clienteId, unrespondedMessages, allMessages, isInitialScan) {
+    try {
+        // Pega as últimas 30 mensagens para contexto
+        const contextHistory = allMessages
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .slice(-30);
+
+        const conversationSummary = contextHistory
+            .map(msg => {
+                const sender = msg.fromMe ? 'Operador' : 'Cliente';
+                const timestamp = new Date(msg.timestamp * 1000).toLocaleString('pt-BR');
+                return `[${timestamp}] ${sender}: ${msg.body || '[Mensagem sem texto]'}`;
+            })
+            .join('\n');
+
+        const allUnrespondedText = unrespondedMessages
+            .map(msg => msg.body || '')
+            .filter(text => text.trim())
+            .join('\n\n');
+
+        const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${allUnrespondedText}`;
+        const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
+        const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
+
+        // Validar e limpar dados antes de salvar
+        const cleanMetadata = {
+            message_ids: unrespondedMessages.map(msg => msg.id || '').filter(id => id),
+            from: latestMessage.from || '',
+            type: 'consolidated_conversation_summary',
+            notify_name: latestMessage.notifyName || '',
+            is_retroactive: Boolean(isInitialScan),
+            total_messages: Number(unrespondedMessages.length) || 0,
+            context_messages: Number(contextHistory.length) || 0,
+            conversation_summary: String(conversationSummary || ''),
+            unresponded_messages: String(allUnrespondedText || '')
+        };
+
+        // Validar timestamp antes de criar Date
+        const validTimestamp = latestMessage.timestamp && !isNaN(latestMessage.timestamp) ? 
+            latestMessage.timestamp : Date.now() / 1000;
+
+        const tarefa = {
+            mensagem_recebida: String(fullContext || ''),
+            mensagem_sugerida: String(iaResposta || ''),
+            status: 'pendente_sumario',
+            data_criacao: admin.firestore.FieldValue.serverTimestamp(),
+            timestamp_mensagem_original: new Date(validTimestamp * 1000),
+            tags: ['venom-bot', 'resumo-consolidado', 'conversa-completa'],
+            follow_up: false,
+            metadata: cleanMetadata
+        };
+
+        if (isInitialScan) {
+            tarefa.tags.push('retroativa');
+        } else {
+            tarefa.tags.push('nova');
+        }
+
+        const tarefaRef = await db.collection('clientes').doc(clienteId).collection('tarefas').add(tarefa);
+        console.log(`   ✅ Nova tarefa de resumo consolidada criada: ${tarefaRef.id}`);
+        
+        // Atualizar timestamp da última mensagem
+        const clienteDocRef = db.collection('clientes').doc(clienteId);
+        const clienteDoc = await clienteDocRef.get();
+        const currentLastTimestamp = clienteDoc.data()?.timestamp_ultima_mensagem?.toDate()?.getTime() || 0;
+        const messageTimestampMs = latestMessage.timestamp * 1000;
+
+        if (messageTimestampMs > currentLastTimestamp) {
+            await clienteDocRef.update({
+                ultima_mensagem: latestMessage.body || '',
+                timestamp_ultima_mensagem: admin.firestore.FieldValue.serverTimestamp()
+            });
+        }
+        
+        // Atualizar métricas de conversão
+        await updateClientConversionMetrics(clienteId);
+        
+        return tarefaRef.id;
+    } catch (error) {
+        console.error(`❌ Erro ao criar tarefa de resumo consolidada:`, error);
+        throw error;
+    }
+}
+
 async function startVenomBot(whatsappNumber, qrCallback) {
     const sessionName = `crm-alra-${whatsappNumber}`;
 
@@ -233,17 +618,16 @@ async function startVenomBot(whatsappNumber, qrCallback) {
             multidevice: false,
             folderNameToken: 'tokens',
             mkdirFolderToken: '',
-            headless: false, // Mantenha 'false' para ver o navegador durante o dev
+            headless: false,
             devtools: false,
             useChrome: true,
             debug: false,
-            logQR: false, // Desabilite aqui para controlar o envio do QR via callback
+            logQR: true, // Temporário para depuração, pode ser false depois
             browserWS: '',
             updatesLog: true,
             autoClose: 60000,
             createPathFileToken: true,
-            whatsappNumber: whatsappNumber, // Propriedade personalizada
-            // Callback para o QR Code
+            whatsappNumber: whatsappNumber,
             catchQR: (base64Qrimg, asciiQR, attempts, urlCode) => {
                 console.log(`QR Code gerado para ${whatsappNumber}. Tentativas: ${attempts}`);
                 if (qrCallback) {
@@ -254,6 +638,20 @@ async function startVenomBot(whatsappNumber, qrCallback) {
 
         console.log(`✅ Venom-Bot para ${whatsappNumber} conectado com sucesso!`);
         activeBots.set(whatsappNumber, client);
+        console.log(`📊 activeBots: Bot ${whatsappNumber} ADICIONADO. Tamanho atual: ${activeBots.size}`);
+
+        // Configurar automaticamente o whatsapp_comercial do usuário
+        try {
+            const operatorUser = await findOperatorByPhone(whatsappNumber);
+            if (operatorUser && (!operatorUser.whatsapp_comercial || operatorUser.whatsapp_comercial.trim() === '')) {
+                await db.collection('usuarios').doc(operatorUser.usuario_id).update({
+                    whatsapp_comercial: whatsappNumber
+                });
+                console.log(`📱 WhatsApp comercial configurado automaticamente para ${operatorUser.email}: ${whatsappNumber}`);
+            }
+        } catch (error) {
+            console.log(`⚠️ Erro ao configurar WhatsApp comercial automaticamente:`, error.message);
+        }
 
         try {
             const host = await client.getHostDevice();
@@ -266,13 +664,10 @@ async function startVenomBot(whatsappNumber, qrCallback) {
             console.log(`⚠️ Erro ao obter informações do dispositivo para ${whatsappNumber}:`, error.message);
         }
 
-        // --- Varredura inicial de mensagens assim que o bot conecta ---
         if (RUN_RETROACTIVE_SCAN_ON_STARTUP) {
             console.log(`🔄 Iniciando varredura inicial de mensagens para ${whatsappNumber}...`);
-            await scanMessagesAndCreateTasks(client, whatsappNumber, true); // Passa 'true' para isInitialScan
+            await scanMessagesAndCreateTasks(client, whatsappNumber, true);
             console.log(`✅ Varredura inicial de mensagens concluída para ${whatsappNumber}.`);
-            // Se quiser desativar a varredura retroativa APÓS a primeira execução,
-            // você precisaria de um mecanismo para persistir esse estado (ex: no Firestore para o usuário).
         }
 
         client.onMessage(async (message) => {
@@ -287,23 +682,24 @@ async function startVenomBot(whatsappNumber, qrCallback) {
                 }
                 const clientPhone = message.from.replace('@c.us', '');
                 const clienteData = await getOrCreateClient(clientPhone, message.notifyName || 'Cliente', operatorUser.usuario_id);
-                await saveMensagemAsTarefa(clienteData.cliente_id, message, false); // Não é retroativa, é em tempo real
+                await saveMensagemAsTarefa(clienteData.cliente_id, message, false); 
             } catch (error) {
                 console.error(`❌ Erro ao processar mensagem em tempo real para ${whatsappNumber}:`, error);
             }
         });
 
-        client.onStateChange((state) => {
+        client.onStateChange(async (state) => {
             console.log(`📱 Estado do WhatsApp para ${whatsappNumber}:`, state);
             if (state === 'CLOSED' || state === 'DISCONNECTED') {
                 console.log(`❗ Instância do bot para ${whatsappNumber} foi ${state}.`);
-                activeBots.delete(whatsappNumber); // Remove a instância desconectada
-                // Idealmente, notifique o frontend que a sessão caiu e precisa de re-autenticação
-                // Ou implemente uma lógica de re-conexão robusta aqui, com limites de tentativas
+                activeBots.delete(whatsappNumber);
+                console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO. Tamanho atual: ${activeBots.size}`);
                 console.log(`Recomendado: Notificar frontend para re-autenticação do número ${whatsappNumber}.`);
+                
+                // Limpar dados dos clientes quando desconectado
+                await cleanupClientDataForNumber(whatsappNumber);
             } else if (state === 'QRCODE') {
                  console.log(`QR Code re-gerado para ${whatsappNumber}. Por favor, escaneie novamente.`);
-                 // O catchQR já deveria lidar com isso, mas um log extra ajuda.
             }
         });
 
@@ -311,33 +707,109 @@ async function startVenomBot(whatsappNumber, qrCallback) {
 
     } catch (error) {
         console.error(`❌ Erro ao iniciar Venom-Bot para ${whatsappNumber}:`, error);
-        // Em caso de erro, remova o bot do mapa para que possa ser tentado novamente
         activeBots.delete(whatsappNumber);
+        console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO (erro na inicialização). Tamanho atual: ${activeBots.size}`);
+        
+        // Limpar dados dos clientes quando há erro na inicialização
+        await cleanupClientDataForNumber(whatsappNumber);
+        
         return null;
     }
 }
 
-/**
- * Para uma instancia do Venom-Bot.
- * @param {string} whatsappNumber
- */
+async function cleanupClientDataForNumber(whatsappNumber) {
+    try {
+        console.log(`🧹 Iniciando limpeza de dados para o número ${whatsappNumber}...`);
+        
+        // Encontrar o operador pelo número
+        const operatorUser = await findOperatorByPhone(whatsappNumber);
+        if (!operatorUser) {
+            console.log(`⚠️ Operador para ${whatsappNumber} não encontrado. Nenhuma limpeza necessária.`);
+            return;
+        }
+        
+        console.log(`🔍 Limpando dados do operador: ${operatorUser.email} (${operatorUser.usuario_id})`);
+        
+        // Buscar todos os clientes deste operador
+        const clientesSnapshot = await db.collection('clientes')
+            .where('usuario_id', '==', operatorUser.usuario_id)
+            .get();
+        
+        console.log(`📋 Encontrados ${clientesSnapshot.size} clientes para limpar`);
+        
+        // Deletar tarefas e clientes em lotes
+        const batch = db.batch();
+        let operationsCount = 0;
+        
+        for (const clienteDoc of clientesSnapshot.docs) {
+            const clienteId = clienteDoc.id;
+            console.log(`  🗑️ Removendo cliente: ${clienteDoc.data().nome} (${clienteId})`);
+            
+            // Buscar e deletar todas as tarefas do cliente
+            const tarefasSnapshot = await db.collection('clientes')
+                .doc(clienteId)
+                .collection('tarefas')
+                .get();
+            
+            // Deletar tarefas
+            for (const tarefaDoc of tarefasSnapshot.docs) {
+                batch.delete(tarefaDoc.ref);
+                operationsCount++;
+                
+                // Executar batch se atingir o limite
+                if (operationsCount >= 450) { // Deixar margem do limite de 500
+                    await batch.commit();
+                    console.log(`  📦 Batch executado (${operationsCount} operações)`);
+                    operationsCount = 0;
+                }
+            }
+            
+            // Deletar o documento do cliente
+            batch.delete(clienteDoc.ref);
+            operationsCount++;
+            
+            if (operationsCount >= 450) {
+                await batch.commit();
+                console.log(`  📦 Batch executado (${operationsCount} operações)`);
+                operationsCount = 0;
+            }
+        }
+        
+        // Executar batch final se houver operações pendentes
+        if (operationsCount > 0) {
+            await batch.commit();
+            console.log(`  📦 Batch final executado (${operationsCount} operações)`);
+        }
+        
+        console.log(`✅ Limpeza concluída para ${whatsappNumber}. ${clientesSnapshot.size} clientes removidos.`);
+        
+    } catch (error) {
+        console.error(`❌ Erro ao limpar dados para ${whatsappNumber}:`, error);
+    }
+}
+
 async function stopVenomBot(whatsappNumber) {
     const client = activeBots.get(whatsappNumber);
     if (client) {
         try {
             await client.close();
             activeBots.delete(whatsappNumber);
+            console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO (parada manual). Tamanho atual: ${activeBots.size}`);
             console.log(`🛑 Bot para ${whatsappNumber} parado com sucesso.`);
+            
+            // Limpar dados dos clientes quando o bot é parado
+            await cleanupClientDataForNumber(whatsappNumber);
+            
         } catch (error) {
             console.error(`❌ Erro ao parar bot para ${whatsappNumber}:`, error);
+            activeBots.delete(whatsappNumber);
+            console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO (erro na parada). Tamanho atual: ${activeBots.size}`);
         }
+    } else {
+        console.log(`⚠️ Bot para ${whatsappNumber} não encontrado no activeBots.`);
     }
 }
 
-/**
- * Monitora a coleção 'usuarios' no Firestore para iniciar/parar bots dinamicamente.
- * @param {Function} qrCallback Callback para enviar o QR Code ao frontend.
- */
 function listenForOperatorChanges(qrCallback) {
     console.log('👂 Escutando por mudanças na coleção de usuários no Firestore para gerenciar bots...');
     db.collection('usuarios').onSnapshot(async (snapshot) => {
@@ -349,21 +821,18 @@ function listenForOperatorChanges(qrCallback) {
             }
         });
 
-        // 1. Parar bots que não estão mais no Firestore
         for (const [number, client] of activeBots.entries()) {
             if (!currentNumbersInDb.has(number)) {
-                console.log(`Detected that ${number} is no longer in Firestore. Stopping bot.`);
+                console.log(`🛑 Parando bot para número removido: ${number}`);
                 await stopVenomBot(number);
             }
         }
 
-        // 2. Iniciar bots para novos números ou números que precisam ser reiniciados
         for (const number of currentNumbersInDb) {
             if (!activeBots.has(number)) {
                 console.log(`Detected new or restarted number ${number} in Firestore. Starting bot.`);
                 await startVenomBot(number, qrCallback);
             }
-            // Se já estiver ativo, não faz nada. O onStateChange lida com desconexões.
         }
         console.log('🔄 Sincronização de bots com Firestore concluída.');
     }, (error) => {
@@ -375,7 +844,9 @@ module.exports = {
     startVenomBot,
     stopVenomBot,
     listenForOperatorChanges,
-    activeBots, // Exporte para que o scheduler possa acessar
-    scanMessagesAndCreateTasks, // Exporte para que o scheduler possa usar
-    enviarMensagem // Exporte para que outras partes do app possam enviar mensagens
+    activeBots,
+    scanMessagesAndCreateTasks,
+    enviarMensagem,
+    updateClientConversionMetrics, // Exportar a função para ser usada no app.js
+    findOperatorByPhone // Exportar a função para ser usada no app.js
 };

@@ -1,4 +1,4 @@
-
+// src/components/ClientTasksDropdown.tsx
 import React, { useState, useEffect } from 'react';
 import { collection, query, orderBy, onSnapshot, doc, updateDoc, getDoc, where } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { ChevronDown, Clock, CheckCircle, MessageCircle, Check, Send, Bot } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { openWhatsAppWithMessage } from '@/services/whatsapp';
+import axios from 'axios'; // Importar axios para a requisição API do backend
 
 interface ClientTasksDropdownProps {
   clienteId: string;
@@ -26,26 +27,18 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
     console.log('📋 ClientTasksDropdown - Carregando tarefas para cliente:', clienteId);
     setLoading(true);
     
-    // Buscar todas as tarefas da subcoleção deste cliente
+    // Buscar apenas tarefas de resumo pendentes
     const q = query(
       collection(db, 'clientes', clienteId, 'tarefas'),
+      where('status', '==', 'pendente_sumario'), // Apenas tarefas de resumo
       orderBy('data_criacao', 'desc')
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      console.log('📝 Tarefas encontradas na subcoleção:', snapshot.size);
+      console.log('📝 Tarefas de resumo encontradas na subcoleção:', snapshot.size);
       
       const tarefasData = snapshot.docs.map(doc => {
         const data = doc.data();
-        console.log('📋 Tarefa carregada:', {
-          id: doc.id,
-          status: data.status,
-          mensagem_preview: data.mensagem_recebida?.substring(0, 30) + '...',
-          data_criacao: data.data_criacao?.toDate?.()?.toLocaleString(),
-          cliente_nome: data.cliente_nome,
-          ai_generated: data.ai_generated
-        });
-        
         return {
           id: doc.id,
           ...data
@@ -55,24 +48,30 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
       setTarefas(tarefasData);
       setLoading(false);
     }, (error) => {
-      console.error('❌ Erro ao carregar tarefas da subcoleção:', error);
+      console.error('❌ Erro ao carregar tarefas de resumo da subcoleção:', error);
       setLoading(false);
     });
 
     return unsubscribe;
   }, [clienteId, isOpen]);
 
-  const pendingTasks = tarefas.filter(t => t.status === 'pendente');
+  // Apenas as tarefas de resumo pendentes para a contagem no botão
+  const pendingSummaryTasks = tarefas.filter(t => t.status === 'pendente_sumario');
   
   const markAsCompleted = async (tarefaId: string) => {
     try {
-      console.log('✅ Marcando tarefa como concluída:', tarefaId);
-      
       await updateDoc(doc(db, 'clientes', clienteId, 'tarefas', tarefaId), {
         status: 'concluída',
         data_conclusao: new Date()
       });
       
+      // Chamar o backend para atualizar as métricas de conversão
+      try {
+        await axios.post('http://localhost:3000/api/update-conversion-metrics', { clienteId });
+      } catch (e) {
+        console.warn('Não foi possível chamar update-conversion-metrics. Endpoint pode não estar ativo ou erro de rede.');
+      }
+
       toast({
         title: "Tarefa concluída! ✅",
         description: "A tarefa foi marcada como concluída com sucesso.",
@@ -97,10 +96,7 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
         });
         return;
       }
-
-      console.log('📱 Enviando mensagem via WhatsApp para cliente:', clienteId);
       
-      // Pegar telefone do cliente (pode estar na tarefa ou buscar do documento do cliente)
       const clientPhone = tarefa.cliente_telefone || await getClientPhone(clienteId);
       
       if (!clientPhone) {
@@ -114,12 +110,17 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
       
       openWhatsAppWithMessage(clientPhone, tarefa.mensagem_sugerida);
       
-      // Marcar como enviada
       if (tarefa.id) {
         await updateDoc(doc(db, 'clientes', clienteId, 'tarefas', tarefa.id), {
           status: 'enviada',
           data_envio: new Date()
         });
+        // Chamar o backend para atualizar as métricas de conversão
+        try {
+          await axios.post('http://localhost:3000/api/update-conversion-metrics', { clienteId });
+        } catch (e) {
+          console.warn('Não foi possível chamar update-conversion-metrics. Endpoint pode não estar ativo ou erro de rede.');
+        }
       }
       
       toast({
@@ -148,7 +149,8 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
 
   const getStatusColor = (status: string) => {
     switch (status) {
-      case 'pendente': return 'bg-yellow-100 text-yellow-800 border-yellow-200';
+      case 'pendente_sumario':
+        return 'bg-yellow-100 text-yellow-800 border-yellow-200';
       case 'enviada': return 'bg-blue-100 text-blue-800 border-blue-200';
       case 'concluída': return 'bg-green-100 text-green-800 border-green-200';
       default: return 'bg-gray-100 text-gray-800 border-gray-200';
@@ -176,9 +178,9 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
       >
         <MessageCircle className="w-3 h-3" />
         <span>Ver Tarefas</span>
-        {pendingTasks.length > 0 && (
+        {pendingSummaryTasks.length > 0 && (
           <Badge className="bg-yellow-500 text-white text-xs px-1 py-0">
-            {pendingTasks.length}
+            {pendingSummaryTasks.length}
           </Badge>
         )}
         <ChevronDown className={`w-3 h-3 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
@@ -197,22 +199,22 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                 <div className="animate-spin w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full mx-auto"></div>
                 <p className="text-xs text-gray-500 mt-2">Carregando tarefas...</p>
               </div>
-            ) : tarefas.length === 0 ? (
+            ) : pendingSummaryTasks.length === 0 ? (
               <div className="text-center py-4">
                 <Clock className="w-6 h-6 text-gray-400 mx-auto mb-2" />
-                <p className="text-xs text-gray-500">Nenhuma tarefa encontrada</p>
+                <p className="text-xs text-gray-500">Nenhuma tarefa de resumo pendente encontrada</p>
               </div>
             ) : (
               <div className="space-y-4 max-h-96 overflow-y-auto">
-                {tarefas.map((tarefa) => (
+                {pendingSummaryTasks.map((tarefa) => (
                   <div key={tarefa.id} className="border rounded-lg p-3 space-y-3 bg-gray-50">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center space-x-2">
                         <Badge className={getStatusColor(tarefa.status)}>
-                          {tarefa.status === 'pendente' && <Clock className="w-3 h-3 mr-1" />}
+                          {tarefa.status === 'pendente_sumario' && <Clock className="w-3 h-3 mr-1" />}
                           {tarefa.status === 'enviada' && <Send className="w-3 h-3 mr-1" />}
                           {tarefa.status === 'concluída' && <CheckCircle className="w-3 h-3 mr-1" />}
-                          {tarefa.status}
+                          {tarefa.status === 'pendente_sumario' ? 'Resumo Pendente' : tarefa.status}
                         </Badge>
                         {tarefa.ai_generated && (
                           <Badge className="bg-purple-100 text-purple-800 border-purple-200">
@@ -226,22 +228,41 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                       </span>
                     </div>
                     
-                    {/* Cliente Info (se disponível) */}
-                    {tarefa.cliente_nome && (
-                      <div className="text-xs text-gray-600">
-                        👤 {tarefa.cliente_nome} • 📱 {tarefa.cliente_telefone}
+                    {tarefa.mensagem_recebida && (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <p className="text-xs font-medium text-gray-700">📩 Mensagens agrupadas (contexto):</p>
+                          {tarefa.metadata && (
+                            <div className="flex items-center space-x-2">
+                              {tarefa.metadata.total_messages && (
+                                <Badge className="bg-blue-100 text-blue-800 text-xs px-2 py-0">
+                                  {tarefa.metadata.total_messages} msgs
+                                </Badge>
+                              )}
+                              {tarefa.metadata.context_messages && (
+                                <Badge className="bg-purple-100 text-purple-800 text-xs px-2 py-0">
+                                  {tarefa.metadata.context_messages} contexto
+                                </Badge>
+                              )}
+                              {tarefa.metadata.type === 'contextual_summary' && (
+                                <Badge className="bg-green-100 text-green-800 text-xs px-2 py-0">
+                                  🎯 Contextualizada
+                                </Badge>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <p className="text-xs text-gray-900 bg-white p-2 rounded border-l-4 border-blue-500">
+                          {tarefa.mensagem_recebida}
+                        </p>
+                        {tarefa.metadata?.message_ids && tarefa.metadata.message_ids.length > 1 && (
+                          <p className="text-xs text-gray-500 mt-1">
+                            💬 Esta tarefa agrupa {tarefa.metadata.message_ids.length} mensagens não respondidas em sequência
+                          </p>
+                        )}
                       </div>
                     )}
                     
-                    {/* Mensagem Recebida */}
-                    <div>
-                      <p className="text-xs font-medium text-gray-700 mb-1">📩 Mensagem recebida:</p>
-                      <p className="text-xs text-gray-900 bg-white p-2 rounded border-l-4 border-blue-500">
-                        {tarefa.mensagem_recebida}
-                      </p>
-                    </div>
-                    
-                    {/* Mensagem Sugerida */}
                     {tarefa.mensagem_sugerida && (
                       <div>
                         <p className="text-xs font-medium text-gray-700 mb-1 flex items-center">
@@ -254,8 +275,7 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                       </div>
                     )}
                     
-                    {/* Botões de Ação */}
-                    {tarefa.status === 'pendente' && (
+                    {tarefa.status === 'pendente_sumario' && (
                       <div className="flex justify-between pt-2 space-x-2">
                         {tarefa.mensagem_sugerida && (
                           <Button
@@ -293,7 +313,6 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                       </div>
                     )}
 
-                    {/* Indicador de erro da IA */}
                     {tarefa.ai_error && (
                       <div className="text-xs text-red-600 bg-red-50 p-2 rounded">
                         ⚠️ Erro na IA: {tarefa.ai_error}

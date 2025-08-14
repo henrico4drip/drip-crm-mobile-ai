@@ -7,10 +7,12 @@
     "start": "node app.js"
   },
   "dependencies": {
-    "venom-bot": "^5.0.0",  
-    "firebase-admin": "^11.0.0",
     "axios": "^1.0.0",
-    "node-cron": "^3.0.0"
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "firebase-admin": "^11.0.0",
+    "node-cron": "^3.0.0",
+    "venom-bot": "^5.0.0"
   },
   "devDependencies": {
     "nodemon": "^2.0.0"
