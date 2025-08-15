@@ -931,21 +931,59 @@ async function startVenomBot(whatsappNumber, qrCallback) {
             multidevice: false,
             folderNameToken: 'tokens',
             mkdirFolderToken: '',
-            headless: false, // Modo não-headless para funcionar no macOS
+            headless: true, // Mudando para headless para melhor estabilidade
             devtools: false,
-            useChrome: true,
+            useChrome: false,
+            executablePath: '/Users/jovemhenrico/.cache/puppeteer/chrome/mac_arm-121.0.6167.85/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing', // Usa Chrome instalado pelo Puppeteer
             debug: false,
-            logQR: false, // Desabilitado pois o QR será exibido no frontend
+            logQR: true, // Habilitando para debug
             browserWS: '',
             updatesLog: true,
-            autoClose: 60000,
+            autoClose: 120000, // Aumentando timeout
             createPathFileToken: true,
             whatsappNumber: whatsappNumber,
-            // Removendo browserArgs que podem causar problemas
+            browserArgs: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--disable-web-security',
+                '--disable-features=VizDisplayCompositor',
+                '--disable-background-timer-throttling',
+                '--disable-backgrounding-occluded-windows',
+                '--disable-renderer-backgrounding',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--disable-extensions'
+            ],
             catchQR: (base64Qrimg, asciiQR, attempts, urlCode) => {
-                console.log(`QR Code gerado para ${whatsappNumber}. Tentativas: ${attempts}`);
-                if (qrCallback) {
-                    qrCallback(whatsappNumber, base64Qrimg, asciiQR, null); // Não enviar urlCode
+                console.log(`📱 QR Code gerado para ${whatsappNumber}. Tentativas: ${attempts}`);
+                console.log(`🔍 QR Code base64 length: ${base64Qrimg ? base64Qrimg.length : 0}`);
+                
+                if (qrCallback && base64Qrimg && base64Qrimg.length > 0) {
+                    // Chamar qrCallback com parâmetros separados como esperado por sendQrCodeToFrontend
+                    qrCallback(whatsappNumber, base64Qrimg, asciiQR, urlCode);
+                } else {
+                    console.log(`⚠️ QR Code vazio ou callback não definido para ${whatsappNumber}`);
+                }
+            },
+            statusFind: (statusSession, session) => {
+                console.log(`📊 Status da sessão ${whatsappNumber}:`, statusSession);
+                if (statusSession === 'isLogged' && qrCallback) {
+                    console.log(`✅ ${whatsappNumber} logado com sucesso!`);
+                    qrCallback({
+                        type: 'logged-in',
+                        whatsappNumber,
+                        timestamp: new Date().toISOString()
+                    });
+                } else if ((statusSession === 'qrReadError' || statusSession === 'qrReadFail') && qrCallback) {
+                    console.log(`❌ Erro no QR Code para ${whatsappNumber}: ${statusSession}`);
+                    qrCallback({
+                        type: 'qr-error',
+                        whatsappNumber,
+                        error: statusSession,
+                        timestamp: new Date().toISOString()
+                    });
                 }
             }
         });
@@ -1106,6 +1144,22 @@ async function stopVenomBot(whatsappNumber) {
     const client = activeBots.get(whatsappNumber);
     if (client) {
         try {
+            console.log(`🛑 Iniciando desconexão completa para ${whatsappNumber}...`);
+            
+            // Tentar fazer logout do WhatsApp Web antes de fechar
+            try {
+                console.log(`🚪 Fazendo logout do WhatsApp Web para ${whatsappNumber}...`);
+                await client.logout();
+                console.log(`✅ Logout realizado com sucesso para ${whatsappNumber}`);
+            } catch (logoutError) {
+                console.log(`⚠️ Erro no logout para ${whatsappNumber}:`, logoutError.message);
+                // Continuar mesmo se o logout falhar
+            }
+            
+            // Aguardar um pouco antes de fechar a sessão
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            
+            // Fechar a sessão
             await client.close();
             activeBots.delete(whatsappNumber);
             console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO (parada manual). Tamanho atual: ${activeBots.size}`);
@@ -1118,9 +1172,22 @@ async function stopVenomBot(whatsappNumber) {
             console.error(`❌ Erro ao parar bot para ${whatsappNumber}:`, error);
             activeBots.delete(whatsappNumber);
             console.log(`📊 activeBots: Bot ${whatsappNumber} REMOVIDO (erro na parada). Tamanho atual: ${activeBots.size}`);
+            
+            // Mesmo com erro, tentar limpar os dados
+            try {
+                await cleanupClientDataForNumber(whatsappNumber);
+            } catch (cleanupError) {
+                console.error(`❌ Erro na limpeza após falha na parada:`, cleanupError);
+            }
         }
     } else {
         console.log(`⚠️ Bot para ${whatsappNumber} não encontrado no activeBots.`);
+        // Mesmo sem bot ativo, limpar dados se existirem
+        try {
+            await cleanupClientDataForNumber(whatsappNumber);
+        } catch (cleanupError) {
+            console.error(`❌ Erro na limpeza sem bot ativo:`, cleanupError);
+        }
     }
 }
 

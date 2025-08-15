@@ -116,6 +116,21 @@ app.post('/api/start-whatsapp-bot', async (req, res) => {
     }
     
     try {
+        // Limpar QR codes antigos antes de iniciar
+        console.log(`🧹 Limpando QR codes antigos para ${whatsappNumber}`);
+        qrCodes.delete(whatsappNumber);
+        
+        // Limpar conexões SSE antigas
+        const oldConnections = sseConnections.get(whatsappNumber) || [];
+        oldConnections.forEach(res => {
+            try {
+                res.end();
+            } catch (e) {
+                // Ignorar erros ao fechar conexões antigas
+            }
+        });
+        sseConnections.delete(whatsappNumber);
+        
         const { startVenomBot } = require('./botManager');
         await startVenomBot(whatsappNumber, sendQrCodeToFrontend);
         res.status(200).json({ message: 'Bot iniciado com sucesso.' });
@@ -136,6 +151,22 @@ app.post('/api/stop-whatsapp-bot', async (req, res) => {
     try {
         const { stopVenomBot } = require('./botManager');
         await stopVenomBot(whatsappNumber);
+        
+        // Limpar QR codes e conexões SSE após desconectar
+        console.log(`🧹 Limpando dados de sessão para ${whatsappNumber}`);
+        qrCodes.delete(whatsappNumber);
+        
+        const connections = sseConnections.get(whatsappNumber) || [];
+        connections.forEach(res => {
+            try {
+                res.write('data: {"type":"disconnected"}\n\n');
+                res.end();
+            } catch (e) {
+                // Ignorar erros ao fechar conexões
+            }
+        });
+        sseConnections.delete(whatsappNumber);
+        
         res.status(200).json({ message: 'Bot desconectado com sucesso.' });
     } catch (error) {
         console.error('❌ Erro ao parar bot:', error);
@@ -1163,37 +1194,68 @@ app.get('/api/debug-firestore', async (req, res) => {
 });
 
 // Função para enviar QR code para o frontend via SSE
-function sendQrCodeToFrontend(whatsappNumber, base64Qrimg, asciiQR, urlCode) {
-    console.log(`📱 QR Code gerado para ${whatsappNumber}`);
-    console.log('QR Code ASCII:');
-    console.log(asciiQR);
+function sendQrCodeToFrontend(whatsappNumberOrEvent, base64Qrimg, asciiQR, urlCode) {
+    let whatsappNumber, data;
     
-    // Armazenar QR code (sem urlCode)
-    qrCodes.set(whatsappNumber, {
-        base64Qrimg,
-        asciiQR,
-        timestamp: new Date().toISOString()
-    });
+    // Verificar se é um evento de status (objeto) ou QR code (parâmetros separados)
+    if (typeof whatsappNumberOrEvent === 'object' && whatsappNumberOrEvent.type) {
+        // É um evento de status (logged-in, qr-error, etc.)
+        const event = whatsappNumberOrEvent;
+        whatsappNumber = event.whatsappNumber;
+        
+        console.log(`📡 Evento ${event.type} para ${whatsappNumber}`);
+        
+        if (event.type === 'logged-in') {
+            // Limpar QR code quando logado
+            qrCodes.delete(whatsappNumber);
+            data = JSON.stringify({
+                type: 'logged-in',
+                whatsappNumber,
+                timestamp: event.timestamp
+            });
+        } else if (event.type === 'qr-error') {
+            data = JSON.stringify({
+                type: 'qr-error',
+                whatsappNumber,
+                error: event.error,
+                timestamp: event.timestamp
+            });
+        }
+    } else {
+        // É um QR code (parâmetros separados)
+        whatsappNumber = whatsappNumberOrEvent;
+        
+        console.log(`📱 QR Code gerado para ${whatsappNumber}`);
+        console.log('QR Code ASCII:');
+        console.log(asciiQR);
+        
+        // Armazenar QR code (sem urlCode)
+        qrCodes.set(whatsappNumber, {
+            base64Qrimg,
+            asciiQR,
+            timestamp: new Date().toISOString()
+        });
+        
+        data = JSON.stringify({
+            type: 'qr-code',
+            whatsappNumber,
+            base64Qrimg,
+            asciiQR,
+            timestamp: new Date().toISOString()
+        });
+    }
     
-    // Enviar para conexões SSE ativas (sem urlCode)
+    // Enviar para conexões SSE ativas
     const connections = sseConnections.get(whatsappNumber) || [];
-    const data = JSON.stringify({
-        type: 'qr-code',
-        whatsappNumber,
-        base64Qrimg,
-        asciiQR,
-        timestamp: new Date().toISOString()
-    });
-    
     connections.forEach(res => {
         try {
             res.write(`data: ${data}\n\n`);
         } catch (error) {
-            console.error('Erro ao enviar QR via SSE:', error);
+            console.error('Erro ao enviar via SSE:', error);
         }
     });
     
-    console.log(`📡 QR Code enviado via SSE para ${connections.length} conexão(ões) ativa(s)`);
+    console.log(`📡 Dados enviados via SSE para ${connections.length} conexão(ões) ativa(s)`);
 }
 
 listenForOperatorChanges(sendQrCodeToFrontend);
