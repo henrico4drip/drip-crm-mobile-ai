@@ -412,7 +412,7 @@ app.post('/api/unified-analysis', async (req, res) => {
                 if (!client) continue;
                 
                 console.log(`🤖 Processando bot: ${whatsappNumber}`);
-                 await scanMessagesAndCreateTasks(whatsappNumber, client);
+                 await scanMessagesAndCreateTasks(client, whatsappNumber);
                  totalClientsProcessed++;
             }
             
