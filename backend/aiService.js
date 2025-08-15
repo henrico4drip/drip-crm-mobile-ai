@@ -4,7 +4,7 @@ const axios = require('axios');
 // IMPORTANTE: Esta chave foi fornecida pelo usuário.
 // Em um ambiente de produção, esta chave DEVE ser armazenada em variáveis de ambiente,
 // e NUNCA diretamente no código-fonte.
-const OPENROUTER_API_KEY = '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'; // Sua chave API
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY || 'sk-or-v1-your-api-key-here'; // Sua chave API
 
 /**
  * Gera uma resposta de IA com base no contexto completo da conversa.
@@ -39,7 +39,7 @@ IMPORTANTE:
     // Contexto já formatado pelo botManager
     messagesForAI.push({
       role: 'user',
-      content: fullContext
+      content: fullContext + '\n\nIMPORTANTE: Além da resposta, avalie a PRIORIDADE desta conversa de 1-10 (onde 10 = alta chance de conversão) baseado no interesse demonstrado, urgência das mensagens e potencial comercial. Inclua no final: [PRIORIDADE: X]'
     });
   } else {
     // Fallback para compatibilidade com chamadas antigas
@@ -66,7 +66,7 @@ IMPORTANTE:
       {
         model: 'openai/gpt-3.5-turbo', // Modelo de IA a ser utilizado
         messages: messagesForAI, // Array de mensagens construído
-        max_tokens: 200, // Aumentado para respostas mais completas
+        max_tokens: 250, // Aumentado para incluir análise de prioridade
         temperature: 0.6 // Reduzido para respostas mais consistentes e focadas
       },
       {
@@ -76,10 +76,26 @@ IMPORTANTE:
         }
       }
     );
-    return resposta.data.choices[0].message.content.trim();
+    
+    const respostaCompleta = resposta.data.choices[0].message.content.trim();
+    
+    // Extrair prioridade da resposta
+    const prioridadeMatch = respostaCompleta.match(/\[PRIORIDADE:\s*(\d+)\]/);
+    const prioridade = prioridadeMatch ? parseInt(prioridadeMatch[1]) : 5; // Default 5 se não encontrar
+    
+    // Remover a tag de prioridade da resposta final
+    const respostaLimpa = respostaCompleta.replace(/\[PRIORIDADE:\s*\d+\]/, '').trim();
+    
+    return {
+      resposta: respostaLimpa,
+      prioridade: prioridade
+    };
   } catch (error) {
     console.error('❌ Erro ao gerar resposta com IA:', error.response?.data?.message || error.message);
-    return 'Desculpe, não consegui gerar uma resposta automática. Posso ajudar de outra forma?';
+    return {
+      resposta: 'Desculpe, não consegui gerar uma resposta automática. Posso ajudar de outra forma?',
+      prioridade: 1
+    };
   }
 }
 

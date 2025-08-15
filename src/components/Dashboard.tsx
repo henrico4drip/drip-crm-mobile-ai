@@ -217,9 +217,7 @@ const Dashboard: React.FC = () => {
         <RetroactiveAIAnalysis onAnalysisComplete={handleAnalysisComplete} />
         
         {/* WhatsApp QR Code Section */}
-        {userData?.whatsapp_comercial && (
-          <WhatsAppQRCode whatsappNumber={userData.whatsapp_comercial} />
-        )}
+        <WhatsAppQRCode whatsappNumber={userData?.whatsapp_comercial || '555195980420'} />
 
         <div>
           <h2 className="text-lg font-semibold text-gray-900 mb-4">

@@ -100,29 +100,19 @@ async function reprocessAllPendingTasks() {
             console.log(`  Última mensagem não respondida: "${latestUnrespondedMessage.substring(0, 50)}..."`);
 
             try {
-                // Obter as últimas 30 mensagens do chat para contexto mais amplo
-                const chatMessages = await venomClient.getAllMessagesInChat(`${clienteTelefone}@c.us`, true, false, 50); // Pega mais para filtrar
+                // Obter as últimas 10 mensagens do chat para contexto (incluindo a última não respondida)
+                const chatMessages = await venomClient.getAllMessagesInChat(`${clienteTelefone}@c.us`, true, false, 20); // Pega mais para filtrar
                 
-                // Filtra as mensagens para pegar as 30 mais recentes ANTES ou IGUAL ao timestamp da última mensagem não respondida
+                // Filtra as mensagens para pegar as 10 mais recentes ANTES ou IGUAL ao timestamp da última mensagem não respondida
                 const relevantHistory = chatMessages
                     .filter(msg => msg.timestamp * 1000 <= latestOriginalMessageTimestamp)
                     .sort((a, b) => a.timestamp - b.timestamp)
-                    .slice(-30); // Pega as últimas 30 mensagens para contexto mais rico
+                    .slice(-10); // Pega as últimas 10 mensagens para contexto
 
-                // Cria um resumo contextual da conversa completa
-                const conversationSummary = relevantHistory
-                    .map(msg => {
-                        const sender = msg.fromMe ? 'Operador' : 'Cliente';
-                        const timestamp = new Date(msg.timestamp * 1000).toLocaleString('pt-BR');
-                        return `[${timestamp}] ${sender}: ${msg.body || '[Mensagem sem texto]'}`;
-                    })
-                    .join('\n');
-
-                // Contexto completo para a IA incluindo histórico da conversa
-                const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${latestUnrespondedMessage}`;
-
-                // Chama a IA com o contexto completo da conversa
-                const novaRespostaIA = await gerarRespostaIA(fullContext, relevantHistory);
+                // Chama a IA com a mensagem recebida e o histórico relevante
+                const iaResult = await gerarRespostaIA(latestUnrespondedMessage, relevantHistory);
+                const novaRespostaIA = typeof iaResult === 'object' ? iaResult.resposta : iaResult;
+                const prioridade = typeof iaResult === 'object' ? iaResult.prioridade : 5;
 
                 // 3. Criar ou Atualizar a Tarefa de Resumo Consolidada
                 const summaryTaskQuery = db.collection('clientes').doc(clienteId).collection('tarefas')
@@ -132,13 +122,14 @@ async function reprocessAllPendingTasks() {
                 const existingSummaryTaskSnapshot = await summaryTaskQuery.get();
 
                 const summaryTaskData = {
-                    mensagem_recebida: fullContext, // Contexto completo da conversa
+                    mensagem_recebida: latestUnrespondedMessage, // A última mensagem que gerou o resumo
                     mensagem_sugerida: novaRespostaIA,
                     status: 'pendente_sumario',
                     data_criacao: admin.firestore.FieldValue.serverTimestamp(),
                     timestamp_mensagem_original: admin.firestore.Timestamp.fromMillis(latestOriginalMessageTimestamp),
                     tags: ['venom-bot', 'ia-resumo', 'consolidado'],
                     follow_up: false,
+                    prioridade: Number(prioridade) || 5,
                     metadata: {
                         cliente_telefone: clienteTelefone,
                         cliente_id: clienteId,

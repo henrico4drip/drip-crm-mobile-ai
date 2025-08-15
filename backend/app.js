@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const { listenForOperatorChanges, scanMessagesAndCreateTasks, activeBots, updateClientConversionMetrics, enviarMensagem } = require('./botManager');
 const { setupDailyTasks } = require('./taskScheduler');
@@ -121,6 +122,24 @@ app.post('/api/start-whatsapp-bot', async (req, res) => {
     } catch (error) {
         console.error('❌ Erro ao iniciar bot:', error);
         res.status(500).json({ error: 'Erro interno ao iniciar o bot.' });
+    }
+});
+
+// Endpoint para parar bot do WhatsApp
+app.post('/api/stop-whatsapp-bot', async (req, res) => {
+    const { whatsappNumber } = req.body;
+    
+    if (!whatsappNumber) {
+        return res.status(400).json({ error: 'Número do WhatsApp é obrigatório.' });
+    }
+    
+    try {
+        const { stopVenomBot } = require('./botManager');
+        await stopVenomBot(whatsappNumber);
+        res.status(200).json({ message: 'Bot desconectado com sucesso.' });
+    } catch (error) {
+        console.error('❌ Erro ao parar bot:', error);
+        res.status(500).json({ error: 'Erro interno ao parar o bot.' });
     }
 });
 
@@ -367,6 +386,112 @@ app.post('/api/update-all-conversion-metrics', async (req, res) => {
     } catch (error) {
         console.error('❌ Erro na API de atualização de métricas de todos os clientes:', error);
         res.status(500).json({ error: 'Erro interno ao atualizar métricas de conversão.' });
+    }
+});
+
+// Endpoint unificado para análise completa
+app.post('/api/unified-analysis', async (req, res) => {
+    try {
+        console.log('🚀 Iniciando análise unificada completa...');
+        
+        let totalClientsProcessed = 0;
+        let totalTasksProcessed = 0;
+        const results = {
+            contextualAnalysis: { success: false, clientsProcessed: 0 },
+            taskReprocessing: { success: false, tasksProcessed: 0 },
+            conversionMetrics: { success: false, clientsUpdated: 0 }
+        };
+        
+        // 1. Análise contextual de todos os clientes
+        console.log('📊 Etapa 1/3: Executando análise contextual...');
+        try {
+            const botKeys = Array.from(activeBots.keys());
+            
+            for (const whatsappNumber of botKeys) {
+                const client = activeBots.get(whatsappNumber);
+                if (!client) continue;
+                
+                console.log(`🤖 Processando bot: ${whatsappNumber}`);
+                 await scanMessagesAndCreateTasks(whatsappNumber, client);
+                 totalClientsProcessed++;
+            }
+            
+            results.contextualAnalysis = {
+                success: true,
+                clientsProcessed: totalClientsProcessed
+            };
+            console.log('✅ Análise contextual concluída');
+        } catch (error) {
+            console.error('❌ Erro na análise contextual:', error);
+            results.contextualAnalysis.error = error.message;
+        }
+        
+        // 2. Reprocessamento de tarefas pendentes
+        console.log('🔄 Etapa 2/3: Reprocessando tarefas pendentes...');
+        try {
+            await reprocessAllPendingTasks();
+            results.taskReprocessing = {
+                success: true,
+                tasksProcessed: totalTasksProcessed
+            };
+            console.log('✅ Reprocessamento de tarefas concluído');
+        } catch (error) {
+            console.error('❌ Erro no reprocessamento de tarefas:', error);
+            results.taskReprocessing.error = error.message;
+        }
+        
+        // 3. Atualização de métricas de conversão
+        console.log('📈 Etapa 3/3: Atualizando métricas de conversão...');
+        try {
+            const { db } = require('./firebaseService');
+            const clientesSnapshot = await db.collection('clientes').get();
+            
+            let processedCount = 0;
+            for (const clienteDoc of clientesSnapshot.docs) {
+                try {
+                    await updateClientConversionMetrics(clienteDoc.id);
+                    processedCount++;
+                } catch (error) {
+                    console.error(`❌ Erro ao atualizar métricas do cliente ${clienteDoc.id}:`, error);
+                }
+            }
+            
+            results.conversionMetrics = {
+                success: true,
+                clientsUpdated: processedCount
+            };
+            console.log('✅ Métricas de conversão atualizadas');
+        } catch (error) {
+            console.error('❌ Erro na atualização de métricas:', error);
+            results.conversionMetrics.error = error.message;
+        }
+        
+        const overallSuccess = results.contextualAnalysis.success && 
+                              results.taskReprocessing.success && 
+                              results.conversionMetrics.success;
+        
+        console.log('🎉 Análise unificada completa!');
+        console.log(`📊 Resumo: ${totalClientsProcessed} clientes processados`);
+        
+        res.json({
+            success: overallSuccess,
+            message: overallSuccess ? 
+                'Análise unificada concluída com sucesso' : 
+                'Análise unificada concluída com alguns erros',
+            results: results,
+            summary: {
+                totalClientsProcessed,
+                totalTasksProcessed
+            }
+        });
+        
+    } catch (error) {
+        console.error('❌ Erro geral na análise unificada:', error);
+        res.status(500).json({
+            success: false,
+            error: error.message,
+            message: 'Erro na análise unificada'
+        });
     }
 });
 
@@ -1042,23 +1167,21 @@ function sendQrCodeToFrontend(whatsappNumber, base64Qrimg, asciiQR, urlCode) {
     console.log(`📱 QR Code gerado para ${whatsappNumber}`);
     console.log('QR Code ASCII:');
     console.log(asciiQR);
-    console.log(`🔗 URL de conexão: ${urlCode}`);
     
-    // Armazenar QR code
+    // Armazenar QR code (sem urlCode)
     qrCodes.set(whatsappNumber, {
         base64Qrimg,
         asciiQR,
-        urlCode,
         timestamp: new Date().toISOString()
     });
     
-    // Enviar para conexões SSE ativas
+    // Enviar para conexões SSE ativas (sem urlCode)
     const connections = sseConnections.get(whatsappNumber) || [];
     const data = JSON.stringify({
+        type: 'qr-code',
         whatsappNumber,
         base64Qrimg,
         asciiQR,
-        urlCode,
         timestamp: new Date().toISOString()
     });
     

@@ -272,10 +272,12 @@ const ClientTasksDropdown: React.FC<ClientTasksDropdownProps> = ({ clienteId }) 
                                 <span className="font-medium text-gray-600">Total de mensagens:</span>
                                 <span className="ml-1 text-gray-900">{tarefa.metadata.executive_summary.total_messages}</span>
                               </div>
-                              <div className="bg-white p-2 rounded border">
-                                <span className="font-medium text-gray-600">Não respondidas:</span>
-                                <span className="ml-1 text-red-600 font-medium">{tarefa.metadata.executive_summary.unanswered_count}</span>
-                              </div>
+                              {tarefa.metadata.executive_summary.unresponded_messages !== undefined && (
+                                <div className="bg-white p-2 rounded border">
+                                  <span className="font-medium text-gray-600">Não respondidas:</span>
+                                  <span className="ml-1 text-red-600">{tarefa.metadata.executive_summary.unresponded_messages}</span>
+                                </div>
+                              )}
                               <div className="bg-white p-2 rounded border">
                                 <span className="font-medium text-gray-600">Do cliente:</span>
                                 <span className="ml-1 text-blue-600">{tarefa.metadata.executive_summary.client_messages}</span>

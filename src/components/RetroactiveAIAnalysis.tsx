@@ -13,12 +13,10 @@ interface RetroactiveAIAnalysisProps {
 
 const RetroactiveAIAnalysis: React.FC<RetroactiveAIAnalysisProps> = ({ onAnalysisComplete }) => {
   const [loading, setLoading] = useState(false);
-  const [updatingMetrics, setUpdatingMetrics] = useState(false);
-  const [reprocessingContextual, setReprocessingContextual] = useState(false);
   const { user } = useAuth();
   const { toast } = useToast();
 
-  const analyzeOldConversations = async () => {
+  const runUnifiedAnalysis = async () => {
     if (!user) {
       toast({
         title: "Atenção",
@@ -31,22 +29,22 @@ const RetroactiveAIAnalysis: React.FC<RetroactiveAIAnalysisProps> = ({ onAnalysi
     setLoading(true);
 
     try {
-      console.log('🔍 ANÁLISE RETROATIVA - Iniciando reprocessamento de todas as tarefas via API... (frontend)');
+      console.log('🔍 ANÁLISE UNIFICADA - Iniciando análise completa via API... (frontend)');
       
-      const response = await axios.post('http://localhost:3000/api/reprocess-all-pending-tasks');
+      const response = await axios.post('http://localhost:3000/api/unified-analysis');
 
       toast({
-        title: "Reprocessamento Iniciado! 🎉",
-        description: response.data.message,
+        title: "Análise Completa Iniciada! 🎉",
+        description: response.data.message || "Análise unificada em andamento. Verifique o console para acompanhar o progresso.",
       });
 
       onAnalysisComplete();
 
     } catch (error: any) {
-      console.error('❌ REPROCESSAMENTO DE TAREFAS - Erro na API:', error.response?.data?.error || error.message);
+      console.error('❌ ANÁLISE UNIFICADA - Erro na API:', error.response?.data?.error || error.message);
       toast({
-        title: "Erro no reprocessamento",
-        description: error.response?.data?.error || "Não foi possível iniciar o reprocessamento. Verifique o console e o backend.",
+        title: "Erro na análise",
+        description: error.response?.data?.error || "Não foi possível iniciar a análise. Verifique o console e o backend.",
         variant: "destructive",
       });
     } finally {
@@ -54,77 +52,9 @@ const RetroactiveAIAnalysis: React.FC<RetroactiveAIAnalysisProps> = ({ onAnalysi
     }
   };
 
-  const updateAllConversionMetrics = async () => {
-    if (!user) {
-      toast({
-        title: "Atenção",
-        description: "Você precisa estar logado para atualizar as métricas.",
-        variant: "destructive",
-      });
-      return;
-    }
 
-    setUpdatingMetrics(true);
 
-    try {
-      console.log('📊 MÉTRICAS - Iniciando atualização de métricas de conversão de todos os clientes...');
-      
-      const response = await axios.post('http://localhost:3000/api/update-all-conversion-metrics');
 
-      toast({
-        title: "Métricas Atualizadas! 📊",
-        description: response.data.message,
-      });
-
-      onAnalysisComplete();
-
-    } catch (error: any) {
-      console.error('❌ MÉTRICAS - Erro na API:', error.response?.data?.error || error.message);
-      toast({
-        title: "Erro na atualização de métricas",
-        description: error.response?.data?.error || "Não foi possível atualizar as métricas. Verifique o console e o backend.",
-        variant: "destructive",
-      });
-    } finally {
-      setUpdatingMetrics(false);
-    }
-  };
-
-  const reprocessContextualTasks = async () => {
-    if (!user) {
-      toast({
-        title: "Atenção",
-        description: "Você precisa estar logado para iniciar o reprocessamento contextualizado.",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setReprocessingContextual(true);
-
-    try {
-      console.log('🔄 REPROCESSAMENTO CONTEXTUALIZADO - Iniciando reprocessamento contextualizado de todos os clientes...');
-      
-      const response = await axios.post('http://localhost:3000/api/reprocess-contextual-tasks');
-
-      toast({
-        title: "Reprocessamento Contextualizado Concluído! 🎯",
-        description: response.data.message,
-      });
-
-      onAnalysisComplete();
-
-    } catch (error: any) {
-      console.error('❌ REPROCESSAMENTO CONTEXTUALIZADO - Erro na API:', error.response?.data?.error || error.message);
-      toast({
-        title: "Erro no reprocessamento contextualizado",
-        description: error.response?.data?.error || "Não foi possível iniciar o reprocessamento contextualizado. Verifique o console e o backend.",
-        variant: "destructive",
-      });
-    } finally {
-      setReprocessingContextual(false);
-    }
-  };
 
   return (
     <Card>
@@ -137,65 +67,34 @@ const RetroactiveAIAnalysis: React.FC<RetroactiveAIAnalysisProps> = ({ onAnalysi
       <CardContent className="space-y-4">
         <div className="space-y-4">
           <p className="text-sm text-gray-600 mb-4">
-            Analise e reprocesse conversas completas com contexto, atualize métricas de conversão e otimize o ranking dos clientes
+            Análise completa com IA: processa conversas do inbox, atualiza métricas de conversão e prioriza clientes com maior potencial
           </p>
           
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="flex justify-center">
             <Button 
-              onClick={analyzeOldConversations}
+              onClick={runUnifiedAnalysis}
               disabled={loading}
-              className="flex items-center justify-center space-x-2 h-12"
+              className="flex items-center justify-center space-x-2 h-14 px-8 text-lg font-medium"
+              size="lg"
             >
               {loading ? (
                 <>
-                  <div className="animate-spin w-4 h-4 border-2 border-white border-t-transparent rounded-full"></div>
+                  <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full"></div>
                   <span>Analisando...</span>
                 </>
               ) : (
                 <>
-                  <MessageCircle className="w-4 h-4" />
-                  <span>Analisar Conversas</span>
+                  <Bot className="w-5 h-5" />
+                  <span>Iniciar Análise Completa</span>
                 </>
               )}
             </Button>
-            
-            <Button 
-              onClick={updateAllConversionMetrics}
-              disabled={updatingMetrics}
-              variant="outline"
-              className="flex items-center justify-center space-x-2 h-12"
-            >
-              {updatingMetrics ? (
-                <>
-                  <div className="animate-spin w-4 h-4 border-2 border-gray-600 border-t-transparent rounded-full"></div>
-                  <span>Atualizando...</span>
-                </>
-              ) : (
-                <>
-                  <BarChart3 className="w-4 h-4" />
-                  <span>Atualizar Métricas</span>
-                </>
-              )}
-            </Button>
-            
-            <Button 
-              onClick={reprocessContextualTasks}
-              disabled={reprocessingContextual}
-              variant="secondary"
-              className="flex items-center justify-center space-x-2 h-12"
-            >
-              {reprocessingContextual ? (
-                <>
-                  <div className="animate-spin w-4 h-4 border-2 border-gray-600 border-t-transparent rounded-full"></div>
-                  <span>Reprocessando...</span>
-                </>
-              ) : (
-                <>
-                  <Bot className="w-4 h-4" />
-                  <span>Reprocessar Contexto</span>
-                </>
-              )}
-            </Button>
+          </div>
+          
+          <div className="text-xs text-gray-500 text-center space-y-1">
+            <p>• Analisa apenas conversas do inbox (exclui grupos e status)</p>
+            <p>• Avalia prioridade e potencial de conversão com IA</p>
+            <p>• Atualiza métricas e rankings automaticamente</p>
           </div>
         </div>
       </CardContent>

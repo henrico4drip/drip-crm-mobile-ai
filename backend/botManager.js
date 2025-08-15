@@ -151,7 +151,9 @@ async function createContextualizedTask(clienteId, unrespondedMessages, chatHist
         const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${allUnrespondedText}`;
 
         // Gera resposta da IA com contexto completo da conversa
-        const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
+        const iaResult = await gerarRespostaIA(fullContext, contextHistory);
+        const iaResposta = typeof iaResult === 'object' ? iaResult.resposta : iaResult;
+        const prioridade = typeof iaResult === 'object' ? iaResult.prioridade : 5;
 
         // Pega a mensagem mais recente para metadados
         const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
@@ -181,6 +183,7 @@ async function createContextualizedTask(clienteId, unrespondedMessages, chatHist
             timestamp_mensagem_original: new Date(validTimestamp * 1000),
             tags: ['venom-bot', 'contextualizada', 'conversa-completa'],
             follow_up: false,
+            prioridade: Number(prioridade) || 5,
             metadata: cleanMetadata
         };
 
@@ -235,7 +238,9 @@ async function saveMensagemAsTarefa(clienteId, message, isRetroactive = false) {
         
         // Nesta versão, a IA é chamada apenas com o corpo da mensagem individual.
         // O histórico é passado apenas no reprocessTasks.js
-        const iaResposta = await gerarRespostaIA(message.body || ''); 
+        const iaResult = await gerarRespostaIA(message.body || '');
+        const iaResposta = typeof iaResult === 'object' ? iaResult.resposta : iaResult;
+        const prioridade = typeof iaResult === 'object' ? iaResult.prioridade : 5; 
 
         // Validar e limpar dados antes de salvar
         const cleanMetadata = {
@@ -256,6 +261,7 @@ async function saveMensagemAsTarefa(clienteId, message, isRetroactive = false) {
             status: isRetroactive ? 'pendente_retroativa' : 'pendente',
             data_criacao: admin.firestore.FieldValue.serverTimestamp(),
             timestamp_mensagem_original: new Date(validTimestamp * 1000),
+            prioridade: Number(prioridade) || 5,
             tags: ['venom-bot', 'recebida'],
             follow_up: false,
             metadata: cleanMetadata
@@ -340,16 +346,7 @@ async function scanMessagesAndCreateTasks(client, whatsappNumber, isInitialScan 
         console.log(`\n--- Processando histórico CONTEXTUALIZADO do cliente: ${cliente.nome} (${telefone}) para ${whatsappNumber} ---`);
 
         try {
-            // Verificar se o chat existe antes de buscar mensagens
-            console.log(`   Verificando se o chat existe para ${clientPhoneNumber}...`);
-            const chatExists = await client.getChatById(clientPhoneNumber).catch(() => null);
-            
-            if (!chatExists) {
-                console.log(`   ⚠️ Chat não encontrado para ${cliente.nome} (${clientPhoneNumber}). Pulando...`);
-                continue;
-            }
-            
-            // Buscar todas as mensagens do chat (includeMe=true, includeNotifications=true)
+            // Buscar todas as mensagens do chat diretamente (includeMe=true, includeNotifications=true)
             console.log(`   Buscando mensagens para ${clientPhoneNumber}...`);
             
             // Tentar diferentes métodos para obter mensagens
@@ -572,7 +569,9 @@ async function updateExistingSummaryTask(taskRef, unrespondedMessages, allMessag
             .join('\n\n');
 
         const fullContext = `HISTÓRICO DA CONVERSA:\n${conversationSummary}\n\nMENSAGENS NÃO RESPONDIDAS:\n${allUnrespondedText}`;
-        const iaResposta = await gerarRespostaIA(fullContext, contextHistory);
+        const iaResult = await gerarRespostaIA(fullContext, contextHistory);
+        const iaResposta = typeof iaResult === 'object' ? iaResult.resposta : iaResult;
+        const prioridade = typeof iaResult === 'object' ? iaResult.prioridade : 5;
         const latestMessage = unrespondedMessages[unrespondedMessages.length - 1];
 
         // Validar timestamp antes de criar Date
@@ -776,7 +775,9 @@ async function createFullContextSummaryTask(clienteId, allMessages, isInitialSca
         const fullContext = `HISTÓRICO COMPLETO DA CONVERSA:\n${conversationHistory}\n\nINSTRUÇÃO: Analise toda a conversa acima e forneça uma resposta contextualizada considerando todo o histórico de interações entre cliente e operador.`;
         
         console.log(`   🤖 Gerando resposta da IA com contexto completo...`);
-        const iaResposta = await gerarRespostaIA(fullContext, sortedMessages);
+        const iaResult = await gerarRespostaIA(fullContext, sortedMessages);
+        const iaResposta = typeof iaResult === 'object' ? iaResult.resposta : iaResult;
+        const prioridade = typeof iaResult === 'object' ? iaResult.prioridade : 5;
         
         // Usar a mensagem mais recente como referência
         const latestMessage = sortedMessages[sortedMessages.length - 1];
@@ -878,6 +879,7 @@ async function createConsolidatedSummaryTask(clienteId, unrespondedMessages, all
             timestamp_mensagem_original: new Date(validTimestamp * 1000),
             tags: ['venom-bot', 'resumo-consolidado', 'conversa-completa'],
             follow_up: false,
+            prioridade: Number(prioridade) || 5,
             metadata: cleanMetadata
         };
 
@@ -929,20 +931,21 @@ async function startVenomBot(whatsappNumber, qrCallback) {
             multidevice: false,
             folderNameToken: 'tokens',
             mkdirFolderToken: '',
-            headless: false,
+            headless: false, // Modo não-headless para funcionar no macOS
             devtools: false,
             useChrome: true,
             debug: false,
-            logQR: true, // Temporário para depuração, pode ser false depois
+            logQR: false, // Desabilitado pois o QR será exibido no frontend
             browserWS: '',
             updatesLog: true,
             autoClose: 60000,
             createPathFileToken: true,
             whatsappNumber: whatsappNumber,
+            // Removendo browserArgs que podem causar problemas
             catchQR: (base64Qrimg, asciiQR, attempts, urlCode) => {
                 console.log(`QR Code gerado para ${whatsappNumber}. Tentativas: ${attempts}`);
                 if (qrCallback) {
-                    qrCallback(whatsappNumber, base64Qrimg, asciiQR, urlCode);
+                    qrCallback(whatsappNumber, base64Qrimg, asciiQR, null); // Não enviar urlCode
                 }
             }
         });

@@ -2,14 +2,14 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Smartphone, Wifi, WifiOff, RefreshCw, QrCode } from 'lucide-react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from './ui/dialog';
+import { Smartphone, Wifi, WifiOff, RefreshCw, QrCode, LogOut } from 'lucide-react';
 import { useToast } from '../hooks/use-toast';
 
 interface QRCodeData {
   type: string;
   whatsappNumber: string;
   base64Qrimg: string;
-  urlCode: string;
   timestamp: string;
 }
 
@@ -20,7 +20,6 @@ interface WhatsAppStatus {
   qrCode?: {
     base64Qrimg: string;
     asciiQR: string;
-    urlCode: string;
     timestamp: string;
   };
 }
@@ -33,6 +32,7 @@ const WhatsAppQRCode: React.FC<WhatsAppQRCodeProps> = ({ whatsappNumber }) => {
   const [qrCode, setQrCode] = useState<QRCodeData | null>(null);
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [showQRModal, setShowQRModal] = useState(false);
   const { toast } = useToast();
 
   // Função para buscar status inicial
@@ -48,7 +48,6 @@ const WhatsAppQRCode: React.FC<WhatsAppQRCodeProps> = ({ whatsappNumber }) => {
             type: 'qr-code',
             whatsappNumber: statusData.whatsappNumber,
             base64Qrimg: statusData.qrCode.base64Qrimg,
-            urlCode: statusData.qrCode.urlCode,
             timestamp: statusData.qrCode.timestamp
           });
         }
@@ -140,134 +139,136 @@ const WhatsAppQRCode: React.FC<WhatsAppQRCodeProps> = ({ whatsappNumber }) => {
     }
   };
 
-  const copyUrlToClipboard = () => {
-    if (qrCode?.urlCode) {
-      navigator.clipboard.writeText(qrCode.urlCode);
-      toast({
-        title: "URL Copiada",
-        description: "URL de conexão copiada para a área de transferência",
+  const handleStopBot = async () => {
+    try {
+      setIsLoading(true);
+      const response = await fetch('http://localhost:3000/api/stop-whatsapp-bot', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ whatsappNumber }),
       });
+      
+      if (response.ok) {
+        toast({
+          title: "WhatsApp Desconectado",
+          description: `WhatsApp ${whatsappNumber} foi desconectado com sucesso.`,
+        });
+        // Limpar estados locais
+        setQrCode(null);
+        setStatus(prev => prev ? { ...prev, isConnected: false, hasQRCode: false } : null);
+        // Verificar status após desconectar
+        setTimeout(fetchStatus, 1000);
+      } else {
+        const error = await response.json();
+        toast({
+          title: "Erro",
+          description: error.error || "Erro ao desconectar WhatsApp",
+          variant: "destructive",
+        });
+      }
+    } catch (error) {
+      console.error('Erro ao desconectar bot:', error);
+      toast({
+        title: "Erro",
+        description: "Erro de conexão ao desconectar WhatsApp",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  if (isLoading) {
-    return (
-      <Card className="w-full">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Smartphone className="h-5 w-5" />
-            WhatsApp - {whatsappNumber}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center justify-center p-8">
-            <RefreshCw className="h-6 w-6 animate-spin" />
-            <span className="ml-2">Carregando status...</span>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
+
 
   return (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Smartphone className="h-5 w-5" />
-            WhatsApp - {whatsappNumber}
-          </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={status?.isConnected ? "default" : "destructive"} className="flex items-center gap-1">
-              {status?.isConnected ? (
-                <><Wifi className="h-3 w-3" /> Conectado</>
-              ) : (
-                <><WifiOff className="h-3 w-3" /> Desconectado</>
-              )}
-            </Badge>
-            <Button variant="outline" size="sm" onClick={handleRefresh}>
-              <RefreshCw className="h-4 w-4" />
-            </Button>
-          </div>
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
+    <div className="flex items-center gap-2">
+      {/* Status Badge */}
+      <Badge variant={status?.isConnected ? "default" : "destructive"} className="flex items-center gap-1">
         {status?.isConnected ? (
-          <div className="text-center p-8">
-            <div className="flex items-center justify-center mb-4">
-              <Wifi className="h-12 w-12 text-green-500" />
-            </div>
-            <h3 className="text-lg font-semibold text-green-600 mb-2">WhatsApp Conectado</h3>
-            <p className="text-gray-600">O WhatsApp está conectado e funcionando normalmente.</p>
-          </div>
-        ) : qrCode ? (
-          <div className="space-y-4">
-            <div className="text-center">
-              <h3 className="text-lg font-semibold mb-2 flex items-center justify-center gap-2">
-                <QrCode className="h-5 w-5" />
-                Escaneie o QR Code
-              </h3>
-              <p className="text-gray-600 mb-4">
-                Use o WhatsApp no seu celular para escanear este código
-              </p>
-            </div>
-            
-            <div className="flex justify-center">
-              <div className="bg-white p-4 rounded-lg border-2 border-gray-200">
-                <img 
-                  src={qrCode.base64Qrimg} 
-                  alt="QR Code do WhatsApp" 
-                  className="w-64 h-64 object-contain"
-                />
-              </div>
-            </div>
-            
-            <div className="text-center space-y-2">
-              <p className="text-sm text-gray-500">
-                Gerado em: {new Date(qrCode.timestamp).toLocaleString('pt-BR')}
-              </p>
-              
-              {qrCode.urlCode && (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Ou use este link:</p>
-                  <div className="flex items-center gap-2">
-                    <input 
-                      type="text" 
-                      value={qrCode.urlCode} 
-                      readOnly 
-                      className="flex-1 px-3 py-2 text-sm border rounded-md bg-gray-50"
-                    />
-                    <Button variant="outline" size="sm" onClick={copyUrlToClipboard}>
-                      Copiar
-                    </Button>
+          <><Wifi className="h-3 w-3" /> Conectado</>
+        ) : (
+          <><WifiOff className="h-3 w-3" /> Desconectado</>
+        )}
+      </Badge>
+
+      {/* Botão principal baseado no status */}
+      {status?.isConnected ? (
+        <Button 
+          variant="destructive" 
+          size="sm"
+          onClick={handleStopBot} 
+          disabled={isLoading}
+          className="flex items-center gap-2"
+        >
+          <LogOut className="h-4 w-4" />
+          {isLoading ? 'Desconectando...' : 'Desconectar'}
+        </Button>
+      ) : (
+        <>
+          {qrCode ? (
+            <Dialog open={showQRModal} onOpenChange={setShowQRModal}>
+              <DialogTrigger asChild>
+                <Button variant="default" size="sm" className="flex items-center gap-2">
+                  <QrCode className="h-4 w-4" />
+                  Ver QR Code
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle className="flex items-center gap-2">
+                    <QrCode className="h-5 w-5" />
+                    Conectar WhatsApp
+                  </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4">
+                  <p className="text-center text-gray-600">
+                    Escaneie este código com o WhatsApp do seu celular
+                  </p>
+                  
+                  <div className="flex justify-center">
+                    <div className="bg-white p-4 rounded-lg border-2 border-gray-200">
+                      <img 
+                        src={qrCode.base64Qrimg} 
+                        alt="QR Code do WhatsApp" 
+                        className="w-48 h-48 object-contain"
+                      />
+                    </div>
+                  </div>
+                  
+                  <div className="text-center space-y-2">
+                    <p className="text-xs text-gray-500">
+                      Gerado em: {new Date(qrCode.timestamp).toLocaleString('pt-BR')}
+                    </p>
+                    
+                    <p className="text-sm text-gray-500">
+                      Abra o WhatsApp no seu celular → Menu → Dispositivos conectados → Conectar um dispositivo
+                    </p>
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
-        ) : (
-          <div className="text-center p-8">
-            <div className="flex items-center justify-center mb-4">
-              <WifiOff className="h-12 w-12 text-gray-400" />
-            </div>
-            <h3 className="text-lg font-semibold text-gray-600 mb-2">Aguardando Conexão</h3>
-            <p className="text-gray-500 mb-4">
-              O WhatsApp está sendo inicializado. O QR Code aparecerá aqui quando estiver pronto.
-            </p>
-            <div className="space-y-2">
-              <Button variant="outline" onClick={handleRefresh}>
-                <RefreshCw className="h-4 w-4 mr-2" />
-                Verificar Novamente
-              </Button>
-              <Button variant="default" onClick={handleStartBot} disabled={isLoading}>
-                <Smartphone className="h-4 w-4 mr-2" />
-                {isLoading ? 'Iniciando...' : 'Iniciar WhatsApp'}
-              </Button>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
+              </DialogContent>
+            </Dialog>
+          ) : (
+            <Button 
+              variant="default" 
+              size="sm"
+              onClick={handleStartBot} 
+              disabled={isLoading}
+              className="flex items-center gap-2"
+            >
+              <Smartphone className="h-4 w-4" />
+              {isLoading ? 'Conectando...' : 'Conectar'}
+            </Button>
+          )}
+        </>
+      )}
+
+      {/* Botão de refresh */}
+      <Button variant="outline" size="sm" onClick={handleRefresh} disabled={isLoading}>
+        <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+      </Button>
+    </div>
   );
 };
 
